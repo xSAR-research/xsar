@@ -2,7 +2,7 @@
 
 **Autonomous drone swarm mesh architecture and telemetry orchestration library.**
 
-Built in **Rust**, `xsar` provides the foundational data structures, state machines, and networking primitives for coordinating autonomous drone swarms engaged in search and rescue (SAR) operations, avionics telemetry synchronization, and terrain-referenced navigation (TERCOM).
+Built in **Rust**, `xsar` provides the foundational data structures, state machines, and networking primitives for coordinating autonomous drone swarms engaged in search and rescue (SAR) operations, avionics telemetry synchronisation, and terrain-referenced navigation (TERCOM).
 
 | | |
 |---|---|
