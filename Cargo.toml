@@ -1,0 +1,11 @@
+[package]
+name = "xsar"
+version = "0.1.0"
+edition = "2021"
+authors = ["Charlie <charlie@xsar.com.au>"]
+description = "Autonomous drone swarm mesh architecture and telemetry orchestration."
+license = "GNU AGPLv3"
+repository = "https://github.com/xsar-research/xsar"
+readme = "README.md"
+keywords = ["drone", "swarm", "telemetry", "xsar", "avionics", "sensors", "TERCOM",]
+categories = ["embedded", "network-programming", "drone","search-and-rescue", "terrain-referenced-navigation", "aerospace"]

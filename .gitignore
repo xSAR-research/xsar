@@ -1,0 +1,22 @@
+# Build artefacts
+/target/
+**/*.rs.bk
+Cargo.lock.bak
+
+# Editor / OS noise
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# Local runtime data
+*.sqlite
+*.sqlite-*
+.env
+.env.*
+
+# Test scratch
+/tmp/
+/screenshots/
