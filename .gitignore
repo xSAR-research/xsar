@@ -6,6 +6,8 @@ Cargo.lock.bak
 # Editor / OS noise
 .idea/
 .vscode/
+*.code-workspace
+xsar.code-workspace
 *.swp
 *.swo
 *~
