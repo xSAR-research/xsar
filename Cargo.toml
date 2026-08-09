@@ -8,10 +8,4 @@ license = "AGPL-3.0-or-later"
 repository = "https://github.com/xsar-research/xsar"
 readme = "README.md"
 keywords = ["drone", "swarm", "mesh", "telemetry", "TERCOM"]
-categories = [
-    "embedded",
-    "network-programming",
-    "drone",
-    "search-and-rescue",
-    "terrain-referenced-navigation",
-]
+categories = ["embedded", "network-programming", "navigation"]
