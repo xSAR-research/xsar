@@ -1,9 +1,35 @@
 /*!
 # xSAR Architecture Core
-Autonomous drone swarm mesh network and telemetry system.
+Drone telemetry data structures and optional reusable QMP and image primitives.
+
+The default feature set has no external dependencies. [`geometry`] provides
+checked pixel/QMP conversions without changing the existing drone [`Position`].
+Enable `qmp` for Unix-socket transport, `image_matching` for validated RGBA
+views and predicate scans, and `png` for PNG decoding (`png` also enables
+`image_matching`). These modules do not select game actions or encode game
+calibration, and QMP acknowledgements do not prove effects in guest software.
 */
 
 use std::fmt;
+
+
+/// Dependency-free pixel geometry and checked QMP absolute-coordinate conversion.
+pub mod geometry;
+
+
+/// Unix QMP transport with caller-selected input and per-I/O timing.
+#[cfg(all(feature = "qmp", unix))]
+pub mod qmp;
+
+
+/// Validated RGBA views and deterministic, read-only predicate scans.
+#[cfg(feature = "image_matching")]
+pub mod image_matching;
+
+
+/// PNG decoding into checked RGBA frames; does not acquire guest screenshots.
+#[cfg(feature = "png")]
+pub mod capture;
 
 // ================================================================
 // Node - flight controller communications
