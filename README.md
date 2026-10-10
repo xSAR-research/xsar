@@ -1,4 +1,4 @@
-# xSAR Core Architecture — 0.2.0 candidate 1, revision 2
+# xSAR Core Architecture — 0.2.1
 
 Rust telemetry data structures with optional reusable QMP transport, pixel
 geometry, PNG decoding and predicate-based image scans.
@@ -17,11 +17,11 @@ they do not implement a mesh protocol or state-transition engine.
 | Declared minimum | Rust 1.101.0 |
 | Candidate provenance | Base `cbee27824f21d6d04d52adb49a7a0266cfc7ed19` |
 
-The declared minimum aligns with the paired controller milestone. Candidate
-validation uses an isolated 1.101 nightly toolchain; successful checks do not
-establish support for lower toolchains. See the delivery evidence for the exact
-compiler identity and checks that ran. This directory is an unpublished
-candidate, not the currently published crates.io `0.1.0` release.
+The declared minimum remains Rust 1.101.0. The two-frame comparison slice is
+paired with the controller's 2.0.11 development version and is not yet promoted.
+Use an explicitly selected installed 1.101 nightly when the host default is
+older than this MSRV; successful nightly checks do not establish lower-toolchain
+support. No toolchain file, global default or registry publication is changed.
 
 Copyright 2026 xSAR Research.
 
@@ -39,17 +39,24 @@ The flags are additive and can be enabled together. On non-Unix targets the
 claim `no_std` support. GUI/windowing dependencies, game names, calibrated card
 geometry and action-selection rules belong in the consuming application.
 
-For a local paired checkout, Cargo can patch the crate dependency without
-changing the application manifest to a machine-specific permanent path:
+For local development, qmp-qemu-socket 2.0.11 selects this sibling source
+checkout directly in its manifest:
 
-```text
-cargo test --manifest-path /absolute/path/to/controller/Cargo.toml \
-  --config 'patch."https://github.com/xsar-research/xsar".xsar.path="/absolute/path/to/xsar"'
+```toml
+xsar = { path = "../xsar", default-features = false, features = ["qmp", "png", "image_matching"] }
 ```
 
-The application release must ultimately pin the exact promoted xsar commit.
-The candidate pairing validates these local files; it does not establish an
-upstream `0.2.0` release or promotion.
+Ordinary Cargo commands build the actual application and crate checkouts; no
+temporary source override, copied workspace, Git push or registry publication
+is required for development. The initial isolated pairing remains historical
+validation evidence, not a prerequisite. After any targeted dependency
+resolution, validate with `--locked` and record Cargo's selected source.
+
+The application release must ultimately replace this development path with the
+exact promoted xSAR Git revision. Promote xSAR first, update the application
+manifest and lockfile without unrelated upgrades, then revalidate and obtain
+consumer acceptance. Do not commit the local development path as the release
+dependency. Registry publication remains a separate explicit decision.
 
 ## Checked geometry
 
@@ -129,6 +136,37 @@ evidence without scene classifications. These are colour/run/block primitives,
 not scale/rotation-aware reference-image template search. HALO palettes, probe
 lines, anchor-to-click invariants, per-game ordering and completion decisions stay
 with application wrappers.
+
+## Two-frame RGB comparison
+
+`image_matching::comparison::count_rgb_changes(before, after, bounds,
+exclusions, threshold)` accepts two independently checked `FrameView`s and
+returns `Result<u64, ComparisonError>`. Both frames must have equal dimensions;
+their valid strides and padding may differ. A pixel counts once if any RGB
+channel's absolute delta is at least the supplied threshold. Alpha and padding
+are ignored. Threshold zero counts every unexcluded pixel, including unchanged
+pixels; 255 requires an extreme channel difference.
+
+The ROI and every exclusion must be non-empty, checked half-open rectangles
+wholly inside the frame. Exclusions contribute only their intersection with
+the ROI; disjoint masks are valid, and overlapping or duplicate masks form a
+union. Every mask is checked before scanning, even after a full-coverage mask.
+Valid no-change and fully excluded regions return `Ok(0)`, never an error.
+Invalid input is an error, never a zero fallback. `ComparisonError` reports
+dimension pairs or the underlying `MatchError`, including the failing exclusion
+index. Existing `MatchError` variants and single-frame APIs remain unchanged.
+
+The primitive allocates no memory and performs no I/O or early effect-floor
+exit. With ROI area A and E exclusions, worst-case work is O(E + A * (E + 1))
+with constant auxiliary storage. The exact u64 count is bounded by the product
+of the ROI's u32 dimensions. Checked view construction separately bounds host
+index arithmetic and storage; no mask-count limit or execution deadline is
+imposed. Callers retain scene recognition, cursor geometry, material-effect
+floors, cancellation and all input/completion authority.
+
+The real application consumers are its worker effect-count adapter and Pyramid
+pile-interior adapter. Game fixtures and decisions remain in the application;
+crate tests use synthetic image evidence only.
 
 ## Validation
 

@@ -10,6 +10,10 @@ use std::fmt;
 use crate::geometry::{PixelPoint, PixelRect};
 
 
+/// Exact two-frame RGB measurements with checked regions and exclusion unions.
+pub mod comparison;
+
+
 /// Supported four-byte, eight-bit-per-channel pixel ordering.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum PixelFormat {

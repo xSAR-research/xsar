@@ -1,5 +1,20 @@
 # Changelog
 
+## 0.2.1
+
+- Add allocation-free `image_matching::comparison::count_rgb_changes` over
+  independently checked RGBA views, with exact u64 RGB-delta counts.
+- Validate equal dimensions, half-open ROIs and all exclusion rectangles;
+  preserve padded strides and count overlapping masks as a union.
+- Add a separate `ComparisonError` without changing existing matching APIs,
+  telemetry, feature dependencies, edition or MSRV.
+- Cover threshold extremes, alpha/padding, geometry failures and multi-mask
+  intersections with synthetic tests and a public API example.
+- Pair with qmp-qemu-socket 2.0.11 through its direct sibling path dependency
+  during local development. Crate-first promotion supplies the exact consumer
+  Git revision; the development path is not the release dependency. No registry
+  publication is implied.
+
 ## 0.2.0 candidate 1, revision 2
 
 - Preserve the local crate-category correction and copyright attribution.
