@@ -8,6 +8,11 @@ Enable `qmp` for Unix-socket transport, `image_matching` for validated RGBA
 views and predicate scans, and `png` for PNG decoding (`png` also enables
 `image_matching`). These modules do not select game actions or encode game
 calibration, and QMP acknowledgements do not prove effects in guest software.
+
+Enable `cards` for pure identities, `pyramid` for complete original deals and
+`pyramid_json` for bounded schema-1/2 reading, schema-2 writing and optional
+no-overwrite file publication. These domains do not recognise screenshots,
+restore a guest or grant input authority. Numeric rank values preserve suits.
 */
 
 use std::fmt;
@@ -30,6 +35,16 @@ pub mod image_matching;
 /// PNG decoding into checked RGBA frames; does not acquire guest screenshots.
 #[cfg(feature = "png")]
 pub mod capture;
+
+
+/// Pure game models, independent of capture, QMP and application calibration.
+#[cfg(feature = "cards")]
+pub mod games;
+
+
+/// Bounded JSON interchange for validated complete original Pyramid deals.
+#[cfg(feature = "pyramid_json")]
+pub mod pyramid_json;
 
 // ================================================================
 // Node - flight controller communications

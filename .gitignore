@@ -22,3 +22,8 @@ xsar.code-workspace
 # Test scratch
 /tmp/
 /screenshots/
+
+# Local developer and agent notes
+AGENTS.md
+/AGENTS-original.md
+/HANDOFF-xsar-next.md

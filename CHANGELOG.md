@@ -1,5 +1,45 @@
 # Changelog
 
+## 0.4.0 — development
+
+- Add const `Rank::value` and checked `Rank::from_value` with fixed A=1 through
+  K=13 mapping, independent of enum discriminants, suit or game-specific rules.
+- Write schema 2 with exact `card`, integer `value` and `suit` records. Derive
+  the display label and value from typed identities; retain suits for all 52 cards.
+- Keep strict schema-1 reading for existing rank/suit exports. Require each
+  version's exact card shape and reject mixed fields, mismatched labels/values,
+  non-integer/out-of-range values, unknown/duplicate keys and invalid inventories.
+- Preserve card order, deal metadata and acquisition provenance on explicit
+  read/write conversion. Do not overwrite or relabel accepted live originals.
+- Retain fixed arrays, the 65,536-byte document cap, no-overwrite publication,
+  dependency-free default features and all existing QMP/image interfaces.
+- Default writer output changes from schema 1 to 2; older schema-1-only readers
+  must be upgraded. No route search, game-rule execution or input authority added.
+
+## 0.3.0 — development
+
+- Add independent `cards`, `pyramid` and `pyramid_json` optional features while
+  preserving the dependency-free default, root telemetry and existing APIs.
+- Model the standard 52 rank/suit identities and an immutable original deal
+  containing exactly 28 tableau cards and 24 first-draw stock cards. Reject
+  duplicates and invalid logical positions without inferring missing identities.
+- Validate bounded provenance and distinguish synthetic/manual fixtures from
+  producer-declared verified restoration after screen recognition.
+- Add schema-1 JSON slice/stream readers and a deterministic bounded byte writer.
+  Enforce a 65,536-byte document cap, fixed collection sizes, strict object shapes,
+  metadata bounds, supported schema/game, uniqueness and completion declarations.
+- Reject unknown/duplicate fields, null evidence, positional struct arrays,
+  malformed identities and trailing documents with bounded diagnostics.
+- Add a labelled synthetic complete fixture and independent public-model/codec
+  integration coverage. These do not establish live card recognition.
+- Add optional Unix `pyramid_json::write_new` publication through a bounded private
+  same-directory temporary, file sync, atomic no-clobber hard link and parent sync.
+  Preserve pre-publication, uncertain-link and published-but-cleanup/durability
+  failure states, original I/O causes and retained temporary paths. Refuse
+  non-Unix publication instead of weakening the private-file permission contract.
+- Keep capture/input, live recon, restoration verification,
+  console intake and search outside this foundation. No registry publication.
+
 ## 0.2.1
 
 - Add allocation-free `image_matching::comparison::count_rgb_changes` over

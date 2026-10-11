@@ -175,6 +175,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "4148590afebada386688f18773da617792bf2ef03ffc1e4cbd2b1d45b023e0ba"
 dependencies = [
  "serde_core",
+ "serde_derive",
 ]
 
 [[package]]
@@ -255,9 +256,10 @@ checksum = "d245f478577f809a851594d02313b640fb437e0bb33866753cff937863096954"
 
 [[package]]
 name = "xsar"
-version = "0.2.1"
+version = "0.4.0"
 dependencies = [
  "image",
+ "serde",
  "serde_json",
  "thiserror",
 ]
