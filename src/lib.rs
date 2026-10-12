@@ -1,4 +1,4 @@
-/*!
+/*! 
 # xSAR Architecture Core
 Drone telemetry data structures and optional reusable QMP and image primitives.
 
@@ -9,10 +9,14 @@ views and predicate scans, and `png` for PNG decoding (`png` also enables
 `image_matching`). These modules do not select game actions or encode game
 calibration, and QMP acknowledgements do not prove effects in guest software.
 
-Enable `cards` for pure identities, `pyramid` for complete original deals and
-`pyramid_json` for bounded schema-1/2 reading, schema-2 writing and optional
+Enable `cards` for pure identities, `pyramid` for complete original deals
+and `pyramid_json` for bounded schema-1/2 reading, schema-2 writing and optional
 no-overwrite file publication. These domains do not recognise screenshots,
 restore a guest or grant input authority. Numeric rank values preserve suits.
+
+Enable `pixel_format` for guest-capture pixel format conversions (BGRA↔RGBA, etc.).
+Enable `tcp_capture` for guest-side QEMU screen capture over TCP (requires `pixel_format`
+and `tokio` 1.45+).
 */
 
 use std::fmt;
@@ -35,6 +39,16 @@ pub mod image_matching;
 /// PNG decoding into checked RGBA frames; does not acquire guest screenshots.
 #[cfg(feature = "png")]
 pub mod capture;
+
+
+/// Pixel format conversions for guest capture and image processing.
+#[cfg(feature = "pixel_format")]
+pub mod pixel_format;
+
+
+/// TCP screen capture client for guest-side capture.
+#[cfg(feature = "tcp_capture")]
+pub mod tcp;
 
 
 /// Pure game models, independent of capture, QMP and application calibration.

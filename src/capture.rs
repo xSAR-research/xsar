@@ -21,11 +21,57 @@ pub enum CaptureError {
         /// Decoded image height in pixels.
         height: u32,
     },
+    /// The frame layout is invalid for PNG encoding.
+    #[error("frame layout is invalid for PNG encoding")]
+    InvalidLayout,
 }
 
 
 /// Owned frame and byte ordering shared with the predicate-scanning module.
 pub use crate::image_matching::{CapturedFrame, PixelFormat};
+
+
+/// Encodes one valid RGBA frame into standard PNG bytes.
+///
+/// Returns the encoded PNG bytes on success. Rejects frames with invalid layout.
+pub fn encode_png(frame: &CapturedFrame) -> Result<Vec<u8>, CaptureError> {
+    if !frame.is_layout_valid() {
+        return Err(CaptureError::InvalidLayout);
+    }
+
+    let packed_stride = usize::try_from(frame.width)
+        .ok()
+        .and_then(|w| w.checked_mul(4))
+        .ok_or(CaptureError::DimensionsOverflow {
+            width: frame.width,
+            height: frame.height,
+        })?;
+
+    let pixels: std::borrow::Cow<'_, [u8]> = if frame.stride == packed_stride {
+        std::borrow::Cow::Borrowed(&frame.pixels)
+    } else {
+        let mut packed = Vec::with_capacity(packed_stride * frame.height as usize);
+        for row in 0..frame.height as usize {
+            let start = row * frame.stride;
+            let end = start + packed_stride;
+            packed.extend_from_slice(&frame.pixels[start..end]);
+        }
+        std::borrow::Cow::Owned(packed)
+    };
+
+    let mut output = Vec::new();
+    let mut cursor = std::io::Cursor::new(&mut output);
+    image::write_buffer_with_format(
+        &mut cursor,
+        &pixels,
+        frame.width,
+        frame.height,
+        image::ExtendedColorType::Rgba8,
+        ImageFormat::Png,
+    )?;
+
+    Ok(output)
+}
 
 
 /// Decodes one PNG into a tightly packed, top-to-bottom RGBA frame.
@@ -101,4 +147,20 @@ mod tests {
 
         assert!(matches!(error, CaptureError::Decode(_)));
     }
+
+    /// Verify encode_png produces valid PNG bytes that round-trip through decode_png.
+    #[test]
+    fn png_encode_decode_round_trip() {
+        let original = decode_png(TWO_PIXEL_RGB_PNG).expect("decode fixture PNG");
+        let encoded = encode_png(&original).expect("encode frame to PNG");
+        assert!(!encoded.is_empty());
+        let round_tripped = decode_png(&encoded).expect("decode re-encoded PNG");
+
+        assert_eq!(original.width, round_tripped.width);
+        assert_eq!(original.height, round_tripped.height);
+        assert_eq!(original.stride, round_tripped.stride);
+        assert_eq!(original.format, round_tripped.format);
+        assert_eq!(original.pixels, round_tripped.pixels);
+    }
 }
+
