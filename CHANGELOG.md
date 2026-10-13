@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.4.2-candidate.1
+
+- Add `image_matching::find_black_run_bottom_up` over a validated borrowed frame
+  and rectangular search area. Visit rows bottom-up and pixels left-to-right;
+  return the first qualifying run's leftmost full-frame coordinate immediately.
+- Match RGB `(0, 0, 0)` exactly, ignore alpha, and return `(0, 0)` when absent.
+  The caller chooses the run length; Spider uses five. The sentinel requires
+  callers to exclude the image origin from their search area.
+- Preserve padded strides, checked bounds and typed errors without allocating
+  or copying image data. Keep game policy, capture and clicks in the caller.
+
 ## 0.4.0 — development
 
 - Add const `Rank::value` and checked `Rank::from_value` with fixed A=1 through

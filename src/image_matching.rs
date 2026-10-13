@@ -10,6 +10,12 @@ use std::fmt;
 use crate::geometry::{PixelPoint, PixelRect};
 
 
+/// Bottom-to-top exact-black horizontal runs in a checked image rectangle.
+pub mod black_run;
+
+pub use black_run::find_black_run_bottom_up;
+
+
 /// Exact two-frame RGB measurements with checked regions and exclusion unions.
 pub mod comparison;
 
