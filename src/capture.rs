@@ -6,7 +6,6 @@
 use image::ImageFormat;
 use thiserror::Error;
 
-
 /// PNG decoding and decoded-layout failures.
 #[derive(Debug, Error)]
 pub enum CaptureError {
@@ -26,10 +25,8 @@ pub enum CaptureError {
     InvalidLayout,
 }
 
-
 /// Owned frame and byte ordering shared with the predicate-scanning module.
 pub use crate::image_matching::{CapturedFrame, PixelFormat};
-
 
 /// Encodes one valid RGBA frame into standard PNG bytes.
 ///
@@ -73,7 +70,6 @@ pub fn encode_png(frame: &CapturedFrame) -> Result<Vec<u8>, CaptureError> {
     Ok(output)
 }
 
-
 /// Decodes one PNG into a tightly packed, top-to-bottom RGBA frame.
 ///
 /// The returned storage has no row padding. RGB scans ignore alpha; the
@@ -82,10 +78,10 @@ pub fn decode_png(bytes: &[u8]) -> Result<CapturedFrame, CaptureError> {
     let rgba = image::load_from_memory_with_format(bytes, ImageFormat::Png)?.into_rgba8();
     let width = rgba.width();
     let height = rgba.height();
-    let width_usize = usize::try_from(width)
-        .map_err(|_| CaptureError::DimensionsOverflow { width, height })?;
-    let height_usize = usize::try_from(height)
-        .map_err(|_| CaptureError::DimensionsOverflow { width, height })?;
+    let width_usize =
+        usize::try_from(width).map_err(|_| CaptureError::DimensionsOverflow { width, height })?;
+    let height_usize =
+        usize::try_from(height).map_err(|_| CaptureError::DimensionsOverflow { width, height })?;
     let stride = width_usize
         .checked_mul(4)
         .ok_or(CaptureError::DimensionsOverflow { width, height })?;
@@ -93,7 +89,6 @@ pub fn decode_png(bytes: &[u8]) -> Result<CapturedFrame, CaptureError> {
         .checked_mul(height_usize)
         .ok_or(CaptureError::DimensionsOverflow { width, height })?;
     let pixels = rgba.into_raw();
-
 
     if pixels.len() != expected_len
         || crate::image_matching::FrameView::from_rgba(width, height, stride, &pixels).is_err()
@@ -110,12 +105,10 @@ pub fn decode_png(bytes: &[u8]) -> Result<CapturedFrame, CaptureError> {
     })
 }
 
-
 #[cfg(test)]
 mod tests {
     //! Exact-byte PNG decoding and invalid-input checks.
     use super::*;
-
 
     /// Minimal lossless fixture containing one red pixel and one dark RGB pixel.
     const TWO_PIXEL_RGB_PNG: &[u8] = &[
@@ -125,7 +118,6 @@ mod tests {
         0xcf, 0xc0, 0xc0, 0xc8, 0xc4, 0x0c, 0x00, 0x06, 0x0b, 0x01, 0x06, 0x04, 0x0b, 0x99, 0x2d,
         0x00, 0x00, 0x00, 0x00, 0x49, 0x45, 0x4e, 0x44, 0xae, 0x42, 0x60, 0x82,
     ];
-
 
     /// Verify exact RGBA bytes and dimensions after decoding.
     #[test]
@@ -138,7 +130,6 @@ mod tests {
         assert_eq!(frame.pixels, [255, 0, 0, 255, 1, 2, 3, 255]);
         assert!(frame.is_layout_valid());
     }
-
 
     /// Reject malformed source bytes without constructing a usable frame.
     #[test]
@@ -163,4 +154,3 @@ mod tests {
         assert_eq!(original.pixels, round_tripped.pixels);
     }
 }
-
