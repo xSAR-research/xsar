@@ -315,6 +315,38 @@ The real application consumers are its worker effect-count adapter and Pyramid
 pile-interior adapter. Game fixtures and decisions remain in the application;
 crate tests use synthetic image evidence only.
 
+## TCP screen capture
+
+The optional `tcp_capture` feature provides the synchronous `tcp::ScreenCaptureClient`
+and shared `tcp::protocol` used by the Windows screen-grab server on port 9999.
+Protocol version 2 sends the five request bytes `42 02 01 00 00`. Each connection
+returns one frame with a packed, 14-byte little-endian header:
+
+| Byte offsets | Field | Type |
+| --- | --- | --- |
+| 0..4 | Width in pixels | `u32` |
+| 4..8 | Height in pixels | `u32` |
+| 8..10 | Stride in bytes per row | `u16` |
+| 10..14 | Frame number | `u32` |
+
+The payload is top-down BGRA: B, G, R, A bytes, with alpha set to 255 by the
+server. The client swaps B and R to produce RGBA. Both layouts use four bytes
+per pixel, so `stride = width * 4`: 1920 pixels need 7680 bytes per row.
+Although `u16` reaches 65535, complete four-byte pixels limit packed stride to
+65532 bytes, or 16383 pixels wide; 16384 pixels require 65536 bytes and refuse.
+The independent full-frame limit remains 8 MiB. Internal buffer indexing uses
+`usize`, widened from the validated wire stride.
+
+Signed producer values are checked before narrowing: negative, zero, oversized
+and misaligned strides refuse. Unsigned wire bytes cannot identify every value
+that a sender incorrectly cast from a negative integer. The receiver checks
+nonzero dimensions, exact packed stride and checked frame size before allocation.
+
+This changes the earlier request/header layouts. Rebuild and deploy both client
+and server together; version-1 requests are refused. The controller's use of
+QMP or TCP remains application policy. The socket tests use a local mock server,
+including full-HD captures, and do not establish live Windows GDI behavior.
+
 ## Validation
 
 Run checks separately from the crate root using the intended toolchain:

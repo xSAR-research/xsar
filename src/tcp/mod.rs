@@ -1,17 +1,13 @@
+//! Guest screen capture using the versioned, little-endian TCP protocol.
+
 use std::io::{Read, Write};
 use std::net::{TcpStream, ToSocketAddrs};
 use std::time::Duration;
 
 use crate::pixel_format;
 
-/// TCP protocol magic constant for request/response framing.
-const PROTOCOL_MAGIC: u32 = 0xDEADBEEF;
-
-/// Request type: full-screen capture.
-const REQUEST_CAPTURE_FULL: u8 = 0x01;
-
-/// Maximum PNG size threshold (safety limit, unused here but kept for parity with QMP module).
-const SNAPSHOT_MAX_BYTES: u64 = 8 * 1024 * 1024; // 8 MiB
+/// Shared request, response and checked stride contract for both endpoints.
+pub mod protocol;
 
 /// TCP server address (guest runs on this port).
 const DEFAULT_SERVER_ADDR: &str = "127.0.0.1:9999";
@@ -61,7 +57,7 @@ pub struct TcpCapturedFrame {
     pub width: u32,
     /// Frame height in pixels.
     pub height: u32,
-    /// Stride (bytes per row, tightly packed for RGBA).
+    /// Tightly packed RGBA bytes per row, widened from the wire's `u16` for indexing.
     pub stride: usize,
     /// Raw RGBA pixels (post-conversion from guest BGRA).
     pub pixels: Vec<u8>,
@@ -84,9 +80,9 @@ pub struct TcpCaptureTiming {
 
 /// Sync TCP client for guest-side screen capture.
 /// 
-/// Maintains a persistent connection to the Windows 11 guest TCP server
-/// and requests full-screen BGRA captures. Handles protocol framing,
-/// connection retry, and BGRA→RGBA pixel conversion.
+/// Requests one full-screen BGRA capture per connection to the Windows 11
+/// guest, matching the server's connection lifetime. Converts BGRA to RGBA
+/// after validating the complete frame geometry and bounded payload size.
 pub struct ScreenCaptureClient {
     server_addr: String,
     stream: Option<TcpStream>,
@@ -137,8 +133,15 @@ impl ScreenCaptureClient {
     /// Send a CAPTURE_FULL request and read the response.
     ///
     /// Protocol:
-    ///   Request:  [magic: u32][type: u8] (5 bytes)
-    ///   Response: [magic: u32][width: u32][height: u32][stride: u32][pixel_data: &[u8]]
+    ///   Request: [magic: u8][version: u8][command: u8][reserved: 2 bytes].
+    ///   Response: [width: u32][height: u32][stride: u16][frame_number: u32],
+    ///   then top-down BGRA pixels. Integers are little-endian, without padding.
+    ///
+    /// The version-2 response header is 14 bytes. Stride is `width * 4`, so
+    /// 1920 pixels use 7680 bytes per row. A `u16` holds at most 65535 bytes;
+    /// the largest packed four-byte row is 65532 bytes (16383 pixels).
+    /// Negative or oversized producer strides must be rejected before narrowing;
+    /// an unsigned wire field cannot preserve a sender's signed interpretation.
     ///
     /// Returns (frame, timing) on success.
     pub fn capture_full(&mut self) -> Result<(TcpCapturedFrame, TcpCaptureTiming), TcpCaptureError> {
@@ -156,42 +159,19 @@ impl ScreenCaptureClient {
             TcpCaptureError::IoError("Stream was lost during capture".to_string())
         })?;
 
-        let request = [
-            PROTOCOL_MAGIC.to_le_bytes().as_ref(),
-            &[REQUEST_CAPTURE_FULL],
-        ]
-        .concat();
-
         stream
-            .write_all(&request)
+            .write_all(&protocol::REQUEST_BYTES)
             .map_err(|e| TcpCaptureError::IoError(format!("Failed to send request: {}", e)))?;
 
-        // Read response header: magic + width + height + stride.
-        let mut header = [0u8; 16];
+        // Parse the shared 14-byte header before allocating or reading pixels.
+        let mut header_bytes = [0u8; protocol::HEADER_LEN];
         stream
-            .read_exact(&mut header)
+            .read_exact(&mut header_bytes)
             .map_err(|e| TcpCaptureError::IoError(format!("Failed to read response header: {}", e)))?;
 
-        let magic = u32::from_le_bytes([header[0], header[1], header[2], header[3]]);
-        if magic != PROTOCOL_MAGIC {
-            return Err(TcpCaptureError::ProtocolError(
-                format!("Magic mismatch: expected {:#x}, got {:#x}", PROTOCOL_MAGIC, magic),
-            ));
-        }
-
-        let width = u32::from_le_bytes([header[4], header[5], header[6], header[7]]);
-        let height = u32::from_le_bytes([header[8], header[9], header[10], header[11]]);
-        let stride = u32::from_le_bytes([header[12], header[13], header[14], header[15]]);
-
-        let stride_usize = stride as usize;
-        let expected_pixel_bytes = stride_usize * (height as usize);
-
-        if expected_pixel_bytes == 0 || expected_pixel_bytes > SNAPSHOT_MAX_BYTES as usize {
-            return Err(TcpCaptureError::ProtocolError(format!(
-                "Invalid pixel buffer size: {} bytes (max {})",
-                expected_pixel_bytes, SNAPSHOT_MAX_BYTES
-            )));
-        }
+        let header = protocol::FrameHeader::from_bytes(header_bytes)
+            .map_err(|message| TcpCaptureError::ProtocolError(message.to_string()))?;
+        let expected_pixel_bytes = header.pixel_bytes();
 
         // Read pixel data (BGRA from guest).
         let pixel_read_start = std::time::Instant::now();
@@ -203,18 +183,11 @@ impl ScreenCaptureClient {
         let pixel_read_end = pixel_read_start.elapsed();
         timing.pixel_read_ms = pixel_read_end.as_secs_f64() * 1000.0;
 
-        // Restore stream for next operation.
-        self.stream = Some(stream);
+        // The server closes after one frame; reconnect for the next capture.
+        drop(stream);
 
         let request_end = request_start.elapsed();
         timing.request_ms = (request_end.as_secs_f64() * 1000.0) - timing.pixel_read_ms;
-
-        if !expected_pixel_bytes.is_multiple_of(4) {
-            return Err(TcpCaptureError::ProtocolError(format!(
-                "Invalid pixel buffer size not a multiple of 4 bytes: {}",
-                expected_pixel_bytes
-            )));
-        }
 
         // Convert BGRA → RGBA in-place (zero-copy).
         let conversion_start = std::time::Instant::now();
@@ -228,9 +201,9 @@ impl ScreenCaptureClient {
 
         Ok((
             TcpCapturedFrame {
-                width,
-                height,
-                stride: stride_usize,
+                width: header.width(),
+                height: header.height(),
+                stride: usize::from(header.stride()),
                 pixels: rgba_pixels,
             },
             timing,

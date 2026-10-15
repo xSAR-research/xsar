@@ -1,5 +1,14 @@
 # Changelog
 
+## Unreleased
+
+- Share TCP capture protocol version 2 with the Windows server: a 14-byte
+  little-endian header with checked `u16` stride and one frame per connection.
+- Bound packed BGRA rows to 65532 bytes / 16383 pixels, reject invalid signed
+  values before narrowing, and validate frame geometry before reading pixels.
+- Add boundary, malformed-header, full-HD color conversion and reconnect tests.
+  Both endpoints must be rebuilt for the changed wire format.
+
 ## 0.4.2-candidate.1
 
 - Add `image_matching::find_black_run_bottom_up` over a validated borrowed frame

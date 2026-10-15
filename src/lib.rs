@@ -15,8 +15,8 @@ no-overwrite file publication. These domains do not recognise screenshots,
 restore a guest or grant input authority. Numeric rank values preserve suits.
 
 Enable `pixel_format` for guest-capture pixel format conversions (BGRA↔RGBA, etc.).
-Enable `tcp_capture` for guest-side QEMU screen capture over TCP (requires `pixel_format`
-and `tokio` 1.45+).
+Enable `tcp_capture` for guest-side QEMU screen capture over TCP and its shared
+version-2 wire protocol (also enables `pixel_format`; uses standard-library I/O).
 */
 
 use std::fmt;
