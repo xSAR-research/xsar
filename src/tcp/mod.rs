@@ -1,269 +1,662 @@
-//! Guest screen capture using the versioned, little-endian TCP protocol.
+//! Bounded, cancellable guest capture using explicit version-2 and version-3 TCP modes.
+//!
+//! Version 3 transfers raw BGR8 and reconstructs owned RGBA8 pixels with alpha
+//! 255. Persistent mode permits one outstanding request, validates identity and
+//! full coverage, and discards the entire connection after any capture error.
+//! No capture request or game input is replayed within a failed operation.
 
-use std::io::{Read, Write};
-use std::net::{TcpStream, ToSocketAddrs};
-use std::time::Duration;
+use std::io::{self, Read, Write};
+use std::net::{SocketAddr, TcpStream};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::time::{Duration, Instant};
 
-use crate::pixel_format;
 
-/// Shared request, response and checked stride contract for both endpoints.
+/// Explicit legacy and version-3 request/response definitions.
 pub mod protocol;
 
-/// TCP server address (guest runs on this port).
+
+/// Default numeric guest-forwarding endpoint; DNS resolution is not performed.
 const DEFAULT_SERVER_ADDR: &str = "127.0.0.1:9999";
 
-/// Connection timeout.
+
+/// One connection attempt's absolute maximum duration.
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
 
-/// Read/write timeout for individual socket operations.
+
+/// Independent absolute limit for request write, header wait and payload read.
 const SOCKET_TIMEOUT: Duration = Duration::from_secs(10);
 
-/// Error type for TCP capture operations.
+
+/// Maximum socket-blocking interval before checking cancellation and total deadline.
+const CANCEL_POLL: Duration = Duration::from_millis(100);
+
+
+/// Explicit wire and lifetime selection; no protocol fallback is inferred.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum CaptureMode {
+    /// Protocol 2 BGRA8 with one frame per connection.
+    LegacyV2,
+    /// Protocol 3 BGR8 with one frame per connection, for controlled comparisons.
+    BgrV3,
+    /// Protocol 3 BGR8 with a validated retained connection.
+    #[default]
+    PersistentBgrV3,
+}
+
+
+/// Error type for TCP capture operations; no variant contains partial pixels.
 #[derive(Debug, Clone)]
 pub enum TcpCaptureError {
-    /// Failed to connect to guest server.
+    /// Connection establishment or endpoint validation failed.
     ConnectionFailed(String),
-    /// Socket operation timed out.
+    /// An absolute operation deadline elapsed.
     Timeout,
-    /// Protocol error (magic mismatch, malformed response).
+    /// Cooperative STOP/cancellation was observed.
+    Cancelled,
+    /// Invalid version, geometry, identity, framing or response metadata.
     ProtocolError(String),
-    /// I/O error during read/write.
+    /// Socket, allocation or other bounded I/O failure.
     IoError(String),
-    /// Pixel format conversion failed.
+    /// A checked pixel conversion could not satisfy the destination layout.
     ConversionError(String),
-    /// Response indicates guest-side error.
+    /// The peer returned a recognised zero-payload failure status.
     GuestError(String),
 }
 
+
 impl std::fmt::Display for TcpCaptureError {
+    /// Format a bounded diagnostic suitable for the caller's failure log.
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::ConnectionFailed(msg) => write!(f, "TCP connection failed: {}", msg),
+            Self::ConnectionFailed(msg) => write!(f, "TCP connection failed: {msg}"),
             Self::Timeout => write!(f, "TCP operation timed out"),
-            Self::ProtocolError(msg) => write!(f, "Protocol error: {}", msg),
-            Self::IoError(msg) => write!(f, "I/O error: {}", msg),
-            Self::ConversionError(msg) => write!(f, "Pixel conversion failed: {}", msg),
-            Self::GuestError(msg) => write!(f, "Guest error: {}", msg),
+            Self::Cancelled => write!(f, "TCP capture cancelled"),
+            Self::ProtocolError(msg) => write!(f, "Protocol error: {msg}"),
+            Self::IoError(msg) => write!(f, "I/O error: {msg}"),
+            Self::ConversionError(msg) => write!(f, "Pixel conversion failed: {msg}"),
+            Self::GuestError(msg) => write!(f, "Guest error: {msg}"),
         }
     }
 }
+
 
 impl std::error::Error for TcpCaptureError {}
 
-/// Represents a single captured frame from guest via TCP.
+
+/// Owned complete native frame; failed operations never publish this value.
 #[derive(Debug, Clone)]
 pub struct TcpCapturedFrame {
-    /// Frame width in pixels.
+    /// Complete native display width in pixels.
     pub width: u32,
-    /// Frame height in pixels.
+    /// Complete native display height in pixels.
     pub height: u32,
-    /// Tightly packed RGBA bytes per row, widened from the wire's `u16` for indexing.
+    /// Tightly packed RGBA8 bytes per row.
     pub stride: usize,
-    /// Raw RGBA pixels (post-conversion from guest BGRA).
+    /// Top-down R, G, B, 255 bytes for every real pixel.
     pub pixels: Vec<u8>,
 }
 
-/// Timing breakdown for TCP capture operation.
+
+/// Correlation and byte counts from the validated response; no wall-clock subtraction.
+#[derive(Debug, Clone, Default)]
+pub struct TcpCaptureMetadata {
+    /// Explicit protocol version, 2 or 3.
+    pub protocol_version: u8,
+    /// Server session identity; zero when legacy protocol provides none.
+    pub session_id: u64,
+    /// Client request identity; zero when legacy protocol provides none.
+    pub request_id: u64,
+    /// Server capture identity, widened from `u32` in legacy mode.
+    pub frame_id: u64,
+    /// Display generation; zero when legacy protocol provides none.
+    pub display_generation: u64,
+    /// Actual request wire length, excluding TCP overhead.
+    pub request_bytes: usize,
+    /// Actual response header length, excluding TCP overhead.
+    pub response_header_bytes: usize,
+    /// Uncompressed wire pixel length, before RGBA expansion.
+    pub decoded_bytes: usize,
+    /// Actual transmitted pixel payload; raw modes equal decoded bytes.
+    pub payload_bytes: usize,
+    /// Whether this operation used a connection retained from a prior valid response.
+    pub reused_connection: bool,
+}
+
+
+/// Monotonic timings in milliseconds; `request_ms` aggregates write and header fields.
 #[derive(Debug, Clone, Default)]
 pub struct TcpCaptureTiming {
-    /// Time to establish connection.
+    /// Connection attempt duration; exactly zero when the connection was reused.
     pub connect_ms: f64,
-    /// Time to send request and receive response header.
+    /// Request write plus header wait, excluding allocation and pixel reads.
     pub request_ms: f64,
-    /// Time to read all pixel data from socket.
+    /// Payload socket reads only; allocation is recorded separately.
     pub pixel_read_ms: f64,
-    /// Time to convert BGRA → RGBA.
+    /// Channel ordering and opaque alpha insertion into the final destination.
     pub conversion_ms: f64,
-    /// Total time from request start to frame ready.
+    /// Entire API call through complete validated RGBA pixels; includes bookkeeping.
     pub total_ms: f64,
+    /// Request write only, ending when all request bytes are accepted by the socket.
+    pub request_write_ms: f64,
+    /// Response header wait/read, starting after the request write finishes.
+    pub header_wait_ms: f64,
+    /// Wire-buffer allocation and zero initialisation, before payload read.
+    pub allocation_ms: f64,
+    /// Final RGBA canvas allocation and zero initialisation; zero for in-place v2.
+    pub canvas_prepare_ms: f64,
+    /// Validated identifiers, wire byte counts and connection reuse.
+    pub metadata: TcpCaptureMetadata,
 }
 
-/// Sync TCP client for guest-side screen capture.
-/// 
-/// Requests one full-screen BGRA capture per connection to the Windows 11
-/// guest, matching the server's connection lifetime. Converts BGRA to RGBA
-/// after validating the complete frame geometry and bounded payload size.
+
+/// Synchronous single-request client with bounded full-frame allocation and socket work.
+///
+/// Endpoints must be numeric `SocketAddr` strings so name resolution cannot escape
+/// the connection deadline. A connection attempt is bounded by five seconds and
+/// checks cancellation before and after that blocking attempt. Established socket
+/// I/O polls cancellation approximately every 100 ms with independent absolute
+/// ten-second request/header/payload deadlines. No error triggers automatic replay.
 pub struct ScreenCaptureClient {
+    /// Numeric IP address and port selected by the application.
     server_addr: String,
+    /// Explicit protocol and connection-lifetime contract.
+    mode: CaptureMode,
+    /// Retained only after complete successful persistent responses.
     stream: Option<TcpStream>,
+    /// Session established by the immediately previous valid response.
+    session_id: u64,
+    /// Nonzero identity to use for the next request on this connection.
+    next_request_id: u64,
+    /// Expected stable display generation on the retained connection.
+    display_generation: u64,
+    /// Latest successfully received frame identity on this connection.
+    last_frame_id: u64,
+    /// Established display dimensions, used to reject silent display changes.
+    display_dimensions: Option<(u32, u32)>,
+    /// Absolute per-stage limit; private override supports fast deadline tests.
+    socket_timeout: Duration,
 }
+
 
 impl ScreenCaptureClient {
-    /// Create a new TCP capture client pointing to the guest server.
+    /// Create the default persistent version-3 client; compatibility is explicitly selected.
     pub fn new(server_addr: Option<String>) -> Self {
+        Self::with_mode(server_addr, CaptureMode::PersistentBgrV3)
+    }
+
+
+    /// Select an explicit protocol and lifetime without fallback or automatic probing.
+    pub fn with_mode(server_addr: Option<String>, mode: CaptureMode) -> Self {
         Self {
             server_addr: server_addr.unwrap_or_else(|| DEFAULT_SERVER_ADDR.to_string()),
+            mode,
             stream: None,
+            session_id: 0,
+            next_request_id: 1,
+            display_generation: 0,
+            last_frame_id: 0,
+            display_dimensions: None,
+            socket_timeout: SOCKET_TIMEOUT,
         }
     }
 
-    /// Establish or re-establish connection to guest server.
-    fn connect(&mut self) -> Result<(), TcpCaptureError> {
-        let addr = self
-            .server_addr
-            .to_socket_addrs()
-            .map_err(|e| TcpCaptureError::ConnectionFailed(e.to_string()))?
-            .next()
-            .ok_or_else(|| {
-                TcpCaptureError::ConnectionFailed(format!("Invalid address: {}", self.server_addr))
-            })?;
 
-        let stream = TcpStream::connect_timeout(&addr, CONNECT_TIMEOUT)
-            .map_err(|e| TcpCaptureError::ConnectionFailed(e.to_string()))?;
+    /// Acquire one fresh full frame with no external cancellation request.
+    pub fn capture_full(
+        &mut self,
+    ) -> Result<(TcpCapturedFrame, TcpCaptureTiming), TcpCaptureError> {
+        self.capture_full_cancellable(&AtomicBool::new(false))
+    }
 
-        stream
-            .set_read_timeout(Some(SOCKET_TIMEOUT))
-            .map_err(|e| TcpCaptureError::IoError(e.to_string()))?;
-        stream
-            .set_write_timeout(Some(SOCKET_TIMEOUT))
-            .map_err(|e| TcpCaptureError::IoError(e.to_string()))?;
 
+    /// Acquire one complete frame; STOP or any error discards connection and identity state.
+    ///
+    /// The caller owns the cancellation flag and may raise it from another thread.
+    /// Returned bytes are exclusively owned and cannot be overwritten by another capture.
+    pub fn capture_full_cancellable(
+        &mut self,
+        cancelled: &AtomicBool,
+    ) -> Result<(TcpCapturedFrame, TcpCaptureTiming), TcpCaptureError> {
+        let result = self.capture_once(cancelled);
+        if result.is_err() {
+            self.disconnect();
+        }
+        result
+    }
+
+
+    /// Perform one request, replacing a retained socket only on pre-request clean EOF.
+    ///
+    /// Unfinished resources stay local until validation; failures never replay a request.
+    fn capture_once(
+        &mut self,
+        cancelled: &AtomicBool,
+    ) -> Result<(TcpCapturedFrame, TcpCaptureTiming), TcpCaptureError> {
+        let start = Instant::now();
+        check_cancelled(cancelled)?;
+        if let Some(stream) = self.stream.as_ref() {
+            let peer_open = reject_unsolicited_data(stream)?;
+            if !peer_open {
+                self.disconnect();
+            }
+        }
+        let reused_connection = self.stream.is_some();
+        let mut timing = TcpCaptureTiming::default();
+        if self.stream.is_none() {
+            let connect_start = Instant::now();
+            self.connect(cancelled)?;
+            timing.connect_ms = millis(connect_start.elapsed());
+        }
+        let mut stream = self
+            .stream
+            .take()
+            .ok_or_else(|| TcpCaptureError::IoError("missing capture socket".to_string()))?;
+        let frame = match self.mode {
+            CaptureMode::LegacyV2 => self.capture_legacy(&mut stream, cancelled, &mut timing)?,
+            CaptureMode::BgrV3 | CaptureMode::PersistentBgrV3 => {
+                self.capture_v3(&mut stream, cancelled, &mut timing)?
+            }
+        };
+        check_cancelled(cancelled)?;
+        self.finish_response_connection(stream)?;
+        timing.metadata.reused_connection = reused_connection;
+        timing.request_ms = timing.request_write_ms + timing.header_wait_ms;
+        timing.total_ms = millis(start.elapsed());
+        Ok((frame, timing))
+    }
+
+
+    /// Retain only a complete response's still-open socket; clean EOF preserves the valid frame.
+    fn finish_response_connection(&mut self, stream: TcpStream) -> Result<(), TcpCaptureError> {
+        let peer_open = reject_unsolicited_data(&stream)?;
+        if self.mode == CaptureMode::PersistentBgrV3 && peer_open {
+            self.stream = Some(stream);
+        } else {
+            self.reset_identity();
+        }
+        Ok(())
+    }
+
+
+    /// Establish one bounded numeric-address connection; never perform unbounded DNS lookup.
+    fn connect(&mut self, cancelled: &AtomicBool) -> Result<(), TcpCaptureError> {
+        check_cancelled(cancelled)?;
+        let addr = self.server_addr.parse::<SocketAddr>().map_err(|_| {
+            TcpCaptureError::ConnectionFailed(
+                "endpoint must be a numeric IP address and port".to_string(),
+            )
+        })?;
+        let result = TcpStream::connect_timeout(&addr, CONNECT_TIMEOUT);
+        check_cancelled(cancelled)?;
+        let stream = result.map_err(|error| {
+            if retryable_timeout(&error) {
+                TcpCaptureError::Timeout
+            } else {
+                TcpCaptureError::ConnectionFailed(error.to_string())
+            }
+        })?;
         self.stream = Some(stream);
         Ok(())
     }
 
-    /// Ensure we have an active connection; reconnect if needed.
-    fn ensure_connected(&mut self) -> Result<(), TcpCaptureError> {
-        if self.stream.is_none() {
-            self.connect()?;
+
+    /// Send the explicitly selected legacy request and validate the original 14-byte header.
+    fn capture_legacy(
+        &self,
+        stream: &mut TcpStream,
+        cancelled: &AtomicBool,
+        timing: &mut TcpCaptureTiming,
+    ) -> Result<TcpCapturedFrame, TcpCaptureError> {
+        let write_start = Instant::now();
+        write_bounded(
+            stream,
+            &protocol::REQUEST_BYTES,
+            cancelled,
+            self.socket_timeout,
+        )?;
+        timing.request_write_ms = millis(write_start.elapsed());
+        let header_start = Instant::now();
+        let mut bytes = [0; protocol::HEADER_LEN];
+        read_bounded(stream, &mut bytes, cancelled, self.socket_timeout)?;
+        timing.header_wait_ms = millis(header_start.elapsed());
+        let header = protocol::FrameHeader::from_bytes(bytes).map_err(protocol_error)?;
+        let allocation_start = Instant::now();
+        let mut pixels = allocate_zeroed(header.pixel_bytes())?;
+        timing.allocation_ms = millis(allocation_start.elapsed());
+        let payload_start = Instant::now();
+        read_bounded(stream, &mut pixels, cancelled, self.socket_timeout)?;
+        timing.pixel_read_ms = millis(payload_start.elapsed());
+        let conversion_start = Instant::now();
+        for (index, pixel) in pixels.as_chunks_mut::<4>().0.iter_mut().enumerate() {
+            if index.is_multiple_of(4096) {
+                check_cancelled(cancelled)?;
+            }
+            pixel.swap(0, 2);
+            pixel[3] = 255;
+        }
+        timing.conversion_ms = millis(conversion_start.elapsed());
+        timing.metadata = TcpCaptureMetadata {
+            protocol_version: protocol::PROTOCOL_VERSION,
+            frame_id: u64::from(header.frame_number()),
+            request_bytes: protocol::REQUEST_BYTES.len(),
+            response_header_bytes: protocol::HEADER_LEN,
+            decoded_bytes: header.pixel_bytes(),
+            payload_bytes: header.pixel_bytes(),
+            ..TcpCaptureMetadata::default()
+        };
+        Ok(TcpCapturedFrame {
+            width: header.width(),
+            height: header.height(),
+            stride: usize::from(header.stride()),
+            pixels,
+        })
+    }
+
+
+    /// Request raw BGR8, reject incompatible metadata, then reconstruct one owned RGBA frame.
+    fn capture_v3(
+        &mut self,
+        stream: &mut TcpStream,
+        cancelled: &AtomicBool,
+        timing: &mut TcpCaptureTiming,
+    ) -> Result<TcpCapturedFrame, TcpCaptureError> {
+        use protocol::v3;
+        let request = v3::Request::new(
+            self.session_id,
+            self.next_request_id,
+            self.display_generation,
+        )
+        .map_err(protocol_error)?;
+        let write_start = Instant::now();
+        write_bounded(stream, &request.to_bytes(), cancelled, self.socket_timeout)?;
+        timing.request_write_ms = millis(write_start.elapsed());
+        let header_start = Instant::now();
+        let mut bytes = [0; v3::HEADER_LEN];
+        read_bounded(stream, &mut bytes, cancelled, self.socket_timeout)?;
+        timing.header_wait_ms = millis(header_start.elapsed());
+        let header = v3::ResponseHeader::from_bytes(bytes).map_err(protocol_error)?;
+        self.validate_response(&header, request.request_id())?;
+        if header.status() != v3::Status::Ok {
+            return Err(TcpCaptureError::GuestError(format!(
+                "{:?}",
+                header.status()
+            )));
+        }
+        let next_request_id = self
+            .next_request_id
+            .checked_add(1)
+            .ok_or_else(|| protocol_error("version-3 request identity exhausted"))?;
+        let allocation_start = Instant::now();
+        let mut wire = allocate_zeroed(header.pixel_bytes())?;
+        timing.allocation_ms = millis(allocation_start.elapsed());
+        let payload_start = Instant::now();
+        read_bounded(stream, &mut wire, cancelled, self.socket_timeout)?;
+        timing.pixel_read_ms = millis(payload_start.elapsed());
+        check_cancelled(cancelled)?;
+        let canvas_start = Instant::now();
+        let mut pixels = allocate_zeroed(header.rgba_bytes())?;
+        timing.canvas_prepare_ms = millis(canvas_start.elapsed());
+        let conversion_start = Instant::now();
+        bgr_to_rgba(&wire, &mut pixels, cancelled)?;
+        timing.conversion_ms = millis(conversion_start.elapsed());
+        self.session_id = header.session_id();
+        self.display_generation = header.display_generation();
+        self.last_frame_id = header.frame_id();
+        self.display_dimensions = Some((header.width(), header.height()));
+        self.next_request_id = next_request_id;
+        timing.metadata = TcpCaptureMetadata {
+            protocol_version: v3::PROTOCOL_VERSION,
+            session_id: header.session_id(),
+            request_id: header.request_id(),
+            frame_id: header.frame_id(),
+            display_generation: header.display_generation(),
+            request_bytes: v3::REQUEST_LEN,
+            response_header_bytes: v3::HEADER_LEN,
+            decoded_bytes: header.pixel_bytes(),
+            payload_bytes: header.pixel_bytes(),
+            reused_connection: false,
+        };
+        Ok(TcpCapturedFrame {
+            width: header.width(),
+            height: header.height(),
+            stride: header.rgba_stride(),
+            pixels,
+        })
+    }
+
+
+    /// Reject stale/cross-session responses and display changes before reading pixel bytes.
+    fn validate_response(
+        &self,
+        header: &protocol::v3::ResponseHeader,
+        request_id: u64,
+    ) -> Result<(), TcpCaptureError> {
+        if header.request_id() != request_id
+            || (self.session_id != 0 && header.session_id() != self.session_id)
+        {
+            return Err(protocol_error(
+                "version-3 response session or request identity mismatch",
+            ));
+        }
+        if header.status() == protocol::v3::Status::Ok {
+            if header.frame_id() <= self.last_frame_id {
+                return Err(protocol_error(
+                    "version-3 frame identity is stale or repeated",
+                ));
+            }
+            if self.display_generation != 0
+                && header.display_generation() != self.display_generation
+            {
+                return Err(protocol_error("version-3 display generation changed"));
+            }
+            if self
+                .display_dimensions
+                .is_some_and(|dimensions| dimensions != (header.width(), header.height()))
+            {
+                return Err(protocol_error(
+                    "version-3 native display dimensions changed",
+                ));
+            }
         }
         Ok(())
     }
 
-    /// Send a CAPTURE_FULL request and read the response.
-    ///
-    /// Protocol:
-    ///   Request: [magic: u8][version: u8][command: u8][reserved: 2 bytes].
-    ///   Response: [width: u32][height: u32][stride: u16][frame_number: u32],
-    ///   then top-down BGRA pixels. Integers are little-endian, without padding.
-    ///
-    /// The version-2 response header is 14 bytes. Stride is `width * 4`, so
-    /// 1920 pixels use 7680 bytes per row. A `u16` holds at most 65535 bytes;
-    /// the largest packed four-byte row is 65532 bytes (16383 pixels).
-    /// Negative or oversized producer strides must be rejected before narrowing;
-    /// an unsigned wire field cannot preserve a sender's signed interpretation.
-    ///
-    /// Returns (frame, timing) on success.
-    pub fn capture_full(&mut self) -> Result<(TcpCapturedFrame, TcpCaptureTiming), TcpCaptureError> {
-        let mut timing = TcpCaptureTiming::default();
-        let start = std::time::Instant::now();
 
-        self.ensure_connected()?;
-
-        let connect_end = start.elapsed();
-        timing.connect_ms = connect_end.as_secs_f64() * 1000.0;
-
-        // Send request.
-        let request_start = std::time::Instant::now();
-        let mut stream = self.stream.take().ok_or_else(|| {
-            TcpCaptureError::IoError("Stream was lost during capture".to_string())
-        })?;
-
-        stream
-            .write_all(&protocol::REQUEST_BYTES)
-            .map_err(|e| TcpCaptureError::IoError(format!("Failed to send request: {}", e)))?;
-
-        // Parse the shared 14-byte header before allocating or reading pixels.
-        let mut header_bytes = [0u8; protocol::HEADER_LEN];
-        stream
-            .read_exact(&mut header_bytes)
-            .map_err(|e| TcpCaptureError::IoError(format!("Failed to read response header: {}", e)))?;
-
-        let header = protocol::FrameHeader::from_bytes(header_bytes)
-            .map_err(|message| TcpCaptureError::ProtocolError(message.to_string()))?;
-        let expected_pixel_bytes = header.pixel_bytes();
-
-        // Read pixel data (BGRA from guest).
-        let pixel_read_start = std::time::Instant::now();
-        let mut bgra_pixels = vec![0u8; expected_pixel_bytes];
-        stream
-            .read_exact(&mut bgra_pixels)
-            .map_err(|e| TcpCaptureError::IoError(format!("Failed to read pixel data: {}", e)))?;
-
-        let pixel_read_end = pixel_read_start.elapsed();
-        timing.pixel_read_ms = pixel_read_end.as_secs_f64() * 1000.0;
-
-        // The server closes after one frame; reconnect for the next capture.
-        drop(stream);
-
-        let request_end = request_start.elapsed();
-        timing.request_ms = (request_end.as_secs_f64() * 1000.0) - timing.pixel_read_ms;
-
-        // Convert BGRA → RGBA in-place (zero-copy).
-        let conversion_start = std::time::Instant::now();
-        pixel_format::bgra_to_rgba_inplace(&mut bgra_pixels);
-        let rgba_pixels = bgra_pixels;
-
-        let conversion_end = conversion_start.elapsed();
-        timing.conversion_ms = conversion_end.as_secs_f64() * 1000.0;
-
-        timing.total_ms = start.elapsed().as_secs_f64() * 1000.0;
-
-        Ok((
-            TcpCapturedFrame {
-                width: header.width(),
-                height: header.height(),
-                stride: usize::from(header.stride()),
-                pixels: rgba_pixels,
-            },
-            timing,
-        ))
+    /// Forget all connection-local correlation after disconnect or failed acquisition.
+    fn reset_identity(&mut self) {
+        self.session_id = 0;
+        self.next_request_id = 1;
+        self.display_generation = 0;
+        self.last_frame_id = 0;
+        self.display_dimensions = None;
     }
 
-    /// Explicitly close the connection (optional; dropped on client drop).
+
+    /// Close the retained socket and clear session/frame/display state.
     pub fn disconnect(&mut self) {
         self.stream = None;
+        self.reset_identity();
     }
 }
 
+
 impl Drop for ScreenCaptureClient {
+    /// Close any retained connection; no input or automatic reconnection occurs.
     fn drop(&mut self) {
         self.disconnect();
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
 
-    #[test]
-    fn test_error_display() {
-        let err = TcpCaptureError::ConnectionFailed("connection refused".to_string());
-        assert_eq!(err.to_string(), "TCP connection failed: connection refused");
-
-        let err = TcpCaptureError::Timeout;
-        assert_eq!(err.to_string(), "TCP operation timed out");
+/// Convert a validated tight BGR slice directly into the exclusively owned RGBA destination.
+fn bgr_to_rgba(
+    wire: &[u8],
+    pixels: &mut [u8],
+    cancelled: &AtomicBool,
+) -> Result<(), TcpCaptureError> {
+    if !wire.len().is_multiple_of(3)
+        || !pixels.len().is_multiple_of(4)
+        || wire.len() / 3 != pixels.len() / 4
+    {
+        return Err(TcpCaptureError::ConversionError(
+            "BGR/RGBA lengths disagree".to_string(),
+        ));
     }
-
-    #[test]
-    fn test_client_creation() {
-        let client = ScreenCaptureClient::new(None);
-        assert_eq!(client.server_addr, DEFAULT_SERVER_ADDR);
-
-        let client = ScreenCaptureClient::new(Some("192.168.1.1:9999".to_string()));
-        assert_eq!(client.server_addr, "192.168.1.1:9999");
+    for (index, (source, destination)) in wire
+        .as_chunks::<3>()
+        .0
+        .iter()
+        .zip(pixels.as_chunks_mut::<4>().0.iter_mut())
+        .enumerate()
+    {
+        if index.is_multiple_of(4096) {
+            check_cancelled(cancelled)?;
+        }
+        destination.copy_from_slice(&[source[2], source[1], source[0], 255]);
     }
+    Ok(())
+}
 
-    #[test]
-    fn test_timing_default() {
-        let timing = TcpCaptureTiming::default();
-        assert_eq!(timing.connect_ms, 0.0);
-        assert_eq!(timing.request_ms, 0.0);
-        assert_eq!(timing.conversion_ms, 0.0);
-        assert_eq!(timing.total_ms, 0.0);
+
+/// Allocate and initialise only a previously validated bounded byte count.
+fn allocate_zeroed(length: usize) -> Result<Vec<u8>, TcpCaptureError> {
+    let mut bytes = Vec::new();
+    bytes
+        .try_reserve_exact(length)
+        .map_err(|_| TcpCaptureError::IoError("bounded frame allocation failed".to_string()))?;
+    bytes.resize(length, 0);
+    Ok(bytes)
+}
+
+
+/// Read exactly one bounded record/payload while preserving partial progress across short polls.
+fn read_bounded(
+    stream: &mut TcpStream,
+    mut bytes: &mut [u8],
+    cancelled: &AtomicBool,
+    timeout: Duration,
+) -> Result<(), TcpCaptureError> {
+    let deadline = Instant::now() + timeout;
+    while !bytes.is_empty() {
+        let remaining = poll_remaining(cancelled, deadline)?;
+        stream.set_read_timeout(Some(remaining)).map_err(io_error)?;
+        match stream.read(bytes) {
+            Ok(0) => {
+                return Err(TcpCaptureError::IoError(
+                    "truncated capture response".to_string(),
+                ));
+            }
+            Ok(count) => {
+                bytes = &mut bytes[count..];
+            }
+            Err(error)
+                if retryable_timeout(&error) || error.kind() == io::ErrorKind::Interrupted => {}
+            Err(error) => return Err(io_error(error)),
+        }
     }
+    poll_remaining(cancelled, deadline)?;
+    Ok(())
+}
 
-    #[test]
-    fn test_captured_frame_structure() {
-        let frame = TcpCapturedFrame {
-            width: 1920,
-            height: 1080,
-            stride: 1920 * 4,
-            pixels: vec![0u8; 1920 * 1080 * 4],
-        };
-        assert_eq!(frame.width, 1920);
-        assert_eq!(frame.height, 1080);
-        assert_eq!(frame.stride, 7680);
-        assert_eq!(frame.pixels.len(), 1920 * 1080 * 4);
+
+/// Write exactly one request under an absolute deadline; partial writes are never replayed.
+fn write_bounded(
+    stream: &mut TcpStream,
+    mut bytes: &[u8],
+    cancelled: &AtomicBool,
+    timeout: Duration,
+) -> Result<(), TcpCaptureError> {
+    let deadline = Instant::now() + timeout;
+    while !bytes.is_empty() {
+        let remaining = poll_remaining(cancelled, deadline)?;
+        stream
+            .set_write_timeout(Some(remaining))
+            .map_err(io_error)?;
+        match stream.write(bytes) {
+            Ok(0) => {
+                return Err(TcpCaptureError::IoError(
+                    "capture request write made no progress".to_string(),
+                ));
+            }
+            Ok(count) => {
+                bytes = &bytes[count..];
+            }
+            Err(error)
+                if retryable_timeout(&error) || error.kind() == io::ErrorKind::Interrupted => {}
+            Err(error) => return Err(io_error(error)),
+        }
+    }
+    poll_remaining(cancelled, deadline)?;
+    Ok(())
+}
+
+
+/// Reject unsolicited bytes and report an open peer; clean EOF returns false.
+fn reject_unsolicited_data(stream: &TcpStream) -> Result<bool, TcpCaptureError> {
+    stream.set_nonblocking(true).map_err(io_error)?;
+    let mut byte = [0];
+    let result = stream.peek(&mut byte);
+    stream.set_nonblocking(false).map_err(io_error)?;
+    match result {
+        Ok(0) => Ok(false), // A complete final response remains valid even if the peer closes.
+        Ok(_) => Err(protocol_error(
+            "unsolicited or trailing capture response bytes",
+        )),
+        Err(error) if error.kind() == io::ErrorKind::WouldBlock => Ok(true),
+        Err(error) => Err(io_error(error)),
     }
 }
+
+
+/// Observe cooperative cancellation before each bounded blocking interval.
+fn check_cancelled(cancelled: &AtomicBool) -> Result<(), TcpCaptureError> {
+    if cancelled.load(Ordering::Acquire) {
+        Err(TcpCaptureError::Cancelled)
+    } else {
+        Ok(())
+    }
+}
+
+
+/// Return at most one poll interval, never extending the absolute operation deadline.
+fn poll_remaining(cancelled: &AtomicBool, deadline: Instant) -> Result<Duration, TcpCaptureError> {
+    check_cancelled(cancelled)?;
+    let remaining = deadline
+        .checked_duration_since(Instant::now())
+        .ok_or(TcpCaptureError::Timeout)?;
+    if remaining.is_zero() {
+        return Err(TcpCaptureError::Timeout);
+    }
+    Ok(remaining.min(CANCEL_POLL))
+}
+
+
+/// Recognise both Unix and Windows socket timeout results.
+fn retryable_timeout(error: &io::Error) -> bool {
+    matches!(
+        error.kind(),
+        io::ErrorKind::TimedOut | io::ErrorKind::WouldBlock
+    )
+}
+
+
+/// Convert a local socket error without exposing partial response storage.
+fn io_error(error: io::Error) -> TcpCaptureError {
+    TcpCaptureError::IoError(error.to_string())
+}
+
+
+/// Preserve checked protocol diagnostics under the public capture error type.
+fn protocol_error(message: &str) -> TcpCaptureError {
+    TcpCaptureError::ProtocolError(message.to_string())
+}
+
+
+/// Convert a local monotonic duration to logged milliseconds.
+fn millis(duration: Duration) -> f64 {
+    duration.as_secs_f64() * 1000.0
+}
+
+
+#[cfg(test)]
+mod tests;

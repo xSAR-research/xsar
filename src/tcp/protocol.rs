@@ -14,17 +14,26 @@
 //! negative value already cast to an unsigned wire field cannot be recovered.
 //! Buffer lengths and indexing use checked `usize` arithmetic internally.
 
-/// Version of the screen-capture protocol.
+
+/// Version-3 BGR8 records; version-2 exports below remain unchanged.
+pub mod v3;
+
+
+/// Version of the legacy screen-capture protocol.
 pub const PROTOCOL_VERSION: u8 = 2;
+
 
 /// Capture-full request: marker, version, command, and two reserved zero bytes.
 pub const REQUEST_BYTES: [u8; 5] = [0x42, PROTOCOL_VERSION, 0x01, 0, 0];
 
+
 /// Packed response-header length; do not serialize a Rust struct's memory.
 pub const HEADER_LEN: usize = 14;
 
+
 /// Existing client limit for a complete uncompressed capture.
 const MAX_PIXEL_BYTES: usize = 8 * 1024 * 1024;
+
 
 /// Validate a signed/API stride before conversion to the unsigned wire field.
 ///
@@ -40,6 +49,7 @@ pub fn checked_stride(value: i64) -> Result<u16, &'static str> {
     Ok(stride)
 }
 
+
 /// Calculate packed BGRA8 row length without truncation or overflow.
 ///
 /// `width * 4` must fit a positive `u16`: at most 16383 pixels / 65532 bytes.
@@ -49,6 +59,7 @@ pub fn stride_from_width(width: u32) -> Result<u16, &'static str> {
         .ok_or("width times four bytes overflows u32")?;
     checked_stride(i64::from(bytes))
 }
+
 
 /// Validated version-2 response geometry and frame number.
 ///
@@ -62,6 +73,7 @@ pub struct FrameHeader {
     frame_number: u32,
     pixel_bytes: usize,
 }
+
 
 impl FrameHeader {
     /// Validate packed BGRA geometry and retain its checked buffer length.
@@ -95,6 +107,7 @@ impl FrameHeader {
         })
     }
 
+
     /// Decode the packed little-endian header and validate before allocation.
     pub fn from_bytes(bytes: [u8; HEADER_LEN]) -> Result<Self, &'static str> {
         Self::new(
@@ -104,6 +117,7 @@ impl FrameHeader {
             u32::from_le_bytes([bytes[10], bytes[11], bytes[12], bytes[13]]),
         )
     }
+
 
     /// Encode explicitly; the wire header has no alignment padding.
     pub fn to_bytes(&self) -> [u8; HEADER_LEN] {
@@ -115,25 +129,30 @@ impl FrameHeader {
         bytes
     }
 
+
     /// Frame width in pixels.
     pub fn width(&self) -> u32 {
         self.width
     }
+
 
     /// Frame height in pixels; rows are stored top-down.
     pub fn height(&self) -> u32 {
         self.height
     }
 
+
     /// Positive bytes per row, represented by two bytes on the wire.
     pub fn stride(&self) -> u16 {
         self.stride
     }
 
+
     /// Server sequence number associated with this frame.
     pub fn frame_number(&self) -> u32 {
         self.frame_number
     }
+
 
     /// Checked pixel-buffer length, excluding the response header.
     pub fn pixel_bytes(&self) -> usize {
@@ -141,10 +160,10 @@ impl FrameHeader {
     }
 }
 
+
 #[cfg(test)]
 mod tests {
     use super::*;
-
     #[test]
     fn signed_stride_rejects_negative_zero_and_over_limit_before_narrowing() {
         for stride in [i64::MIN, -65536, -4, -1, 0, 65536, 65540, i64::MAX] {
@@ -154,14 +173,12 @@ mod tests {
         assert_eq!(checked_stride(7680), Ok(7680));
         assert_eq!(checked_stride(65532), Ok(65532));
     }
-
     #[test]
     fn stride_requires_complete_four_byte_pixels() {
         for stride in [1, 2, 3, 5, 65533, 65534, 65535] {
             assert!(checked_stride(stride).is_err(), "accepted {stride}");
         }
     }
-
     #[test]
     fn packed_stride_respects_width_and_overflow_limits() {
         assert_eq!(stride_from_width(1), Ok(4));
@@ -171,7 +188,6 @@ mod tests {
             assert!(stride_from_width(width).is_err(), "accepted {width}");
         }
     }
-
     #[test]
     fn request_and_header_have_exact_version_two_wire_layout() {
         assert_eq!(REQUEST_BYTES, [0x42, 0x02, 0x01, 0, 0]);
@@ -186,7 +202,6 @@ mod tests {
         assert_eq!(header.frame_number(), 0x12345678);
         assert_eq!(header.pixel_bytes(), 24);
     }
-
     #[test]
     fn malformed_geometry_is_rejected_on_construction_and_decode() {
         for (width, height, stride) in [
@@ -207,7 +222,6 @@ mod tests {
             assert!(FrameHeader::from_bytes(bytes).is_err());
         }
     }
-
     #[test]
     fn frame_byte_limit_is_inclusive_and_large_heights_are_rejected() {
         assert_eq!(

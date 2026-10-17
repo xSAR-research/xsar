@@ -1,4 +1,4 @@
-# xSAR Core Architecture — 0.4.0 development
+# xSAR Core Architecture — 0.4.2-candidate.2 development
 
 Rust telemetry data structures with optional reusable QMP transport, pixel
 geometry, PNG decoding, predicate-based image scans and pure card/deal models
@@ -14,7 +14,7 @@ they do not implement a mesh protocol or state-transition engine.
 | License | [AGPL-3.0-or-later](LICENSE) |
 | Repository | https://github.com/xsar-research/xsar |
 | Contact | charlie@xsar.com.au / info@xsar.com.au |
-| Edition | Rust 2021 |
+| Edition | Rust 2024 |
 | Declared minimum | Rust 1.101.0 |
 | Candidate provenance | Base `cbee27824f21d6d04d52adb49a7a0266cfc7ed19` |
 
@@ -39,6 +39,14 @@ Copyright 2026 xSAR Research.
 | `cards` | `games::cards` | Portable `std`; no external dependencies |
 | `pyramid` | `games::pyramid`, also `games::cards` | Enables `cards`; no external dependencies |
 | `pyramid_json` | `pyramid_json`, also both model modules | Optional `serde` with std/derive and existing `serde_json`; no QMP/image/GUI dependencies |
+| `pixel_format` | `pixel_format` | Portable byte-layout conversion; no external dependencies |
+| `tcp_capture` | `tcp`, also `pixel_format` | Bounded standard-library TCP capture and shared protocol; no QMP/PNG/GUI dependencies |
+
+The current local TCP candidate adds version-3 BGR8 and bounded persistent
+sessions, paired with screen-grab server 0.1.2 and qmp-qemu-socket candidate.13.
+See the [TCP protocol and client contract](docs/tcp-capture-protocol.md).
+Version 2 remains an explicit comparison mode; new clients default to version 3.
+The older promotion records below describe their own historical revisions.
 
 The flags are additive and can be enabled together. On non-Unix targets the
 `qmp` module is unavailable; the other modules remain usable. The crate does not

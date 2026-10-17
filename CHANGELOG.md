@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+- Add candidate 0.4.2-candidate.2: checked version-3 full-screen BGR8 headers,
+  opaque RGBA reconstruction, explicit legacy/one-frame/persistent modes,
+  correlated response metadata and independent monotonic timing boundaries.
+- Bound connect and transaction stages; support cooperative cancellation during
+  socket I/O and discard failed sessions without retry. Numeric endpoints avoid
+  unbounded DNS; an active connect may still take up to five seconds.
+- Preserve dependency-free defaults and the standalone tcp_capture feature;
+  no region, compression, QMP input or image-recognition authority is added.
+
 - Share TCP capture protocol version 2 with the Windows server: a 14-byte
   little-endian header with checked `u16` stride and one frame per connection.
 - Bound packed BGRA rows to 65532 bytes / 16383 pixels, reject invalid signed

@@ -1,20 +1,21 @@
 //! Exercise the actual client against independent version-2 wire fixtures.
-
 #![cfg(feature = "tcp_capture")]
-
 use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::thread;
 use std::time::Duration;
-
-use xsar::tcp::{ScreenCaptureClient, TcpCaptureError};
+use xsar::tcp::{CaptureMode, ScreenCaptureClient, TcpCaptureError};
 
 
 /// Receive one request, with a deadline so a broken client cannot hang the peer.
 fn request(listener: &TcpListener) -> TcpStream {
     let (mut socket, _) = listener.accept().unwrap();
-    socket.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
-    socket.set_write_timeout(Some(Duration::from_secs(5))).unwrap();
+    socket
+        .set_read_timeout(Some(Duration::from_secs(5)))
+        .unwrap();
+    socket
+        .set_write_timeout(Some(Duration::from_secs(5)))
+        .unwrap();
     let mut bytes = [0u8; 5];
     socket.read_exact(&mut bytes).unwrap();
     assert_eq!(bytes, [0x42, 0x02, 0x01, 0, 0]);
@@ -29,7 +30,8 @@ fn header(width: u32, height: u32, stride: u16, sequence: u32) -> Vec<u8> {
         height.to_le_bytes().as_slice(),
         stride.to_le_bytes().as_slice(),
         sequence.to_le_bytes().as_slice(),
-    ].concat()
+    ]
+    .concat()
 }
 
 
@@ -51,14 +53,22 @@ fn full_hd_capture_reads_u16_stride_converts_bgra_and_reconnects() {
             socket.write_all(&bytes[12..]).unwrap();
         }
     });
-
-    let mut client = ScreenCaptureClient::new(Some(address));
+    let mut client = ScreenCaptureClient::with_mode(Some(address), CaptureMode::LegacyV2);
     for _ in 0..2 {
         let (frame, _) = client.capture_full().unwrap();
-        assert_eq!((frame.width, frame.height, frame.stride), (1920, 1080, 7680));
+        assert_eq!(
+            (frame.width, frame.height, frame.stride),
+            (1920, 1080, 7680)
+        );
         assert_eq!(frame.pixels.len(), 8_294_400);
-        assert!(frame.pixels.as_chunks::<4>().0.iter()
-            .all(|pixel| *pixel == [0x33, 0x22, 0x11, 0xff]));
+        assert!(
+            frame
+                .pixels
+                .as_chunks::<4>()
+                .0
+                .iter()
+                .all(|pixel| *pixel == [0x33, 0x22, 0x11, 0xff])
+        );
     }
     peer.join().unwrap();
 }
@@ -67,7 +77,10 @@ fn full_hd_capture_reads_u16_stride_converts_bgra_and_reconnects() {
 #[test]
 fn invalid_wire_geometry_is_rejected_before_reading_pixels() {
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
-    let mut client = ScreenCaptureClient::new(Some(listener.local_addr().unwrap().to_string()));
+    let mut client = ScreenCaptureClient::with_mode(
+        Some(listener.local_addr().unwrap().to_string()),
+        CaptureMode::LegacyV2,
+    );
     let invalid = [
         header(0, 1, 4, 0),
         header(1, 0, 4, 0),
@@ -90,7 +103,10 @@ fn invalid_wire_geometry_is_rejected_before_reading_pixels() {
         }
     });
     for _ in 0..count {
-        assert!(matches!(client.capture_full(), Err(TcpCaptureError::ProtocolError(_))));
+        assert!(matches!(
+            client.capture_full(),
+            Err(TcpCaptureError::ProtocolError(_))
+        ));
     }
     peer.join().unwrap();
 }
@@ -110,8 +126,11 @@ fn incomplete_payload_is_not_reused_for_the_next_capture() {
         socket.write_all(&header(1, 1, 4, 11)).unwrap();
         socket.write_all(&[0x11, 0x22, 0x33, 0xff]).unwrap();
     });
-    let mut client = ScreenCaptureClient::new(Some(address));
-    assert!(matches!(client.capture_full(), Err(TcpCaptureError::IoError(_))));
+    let mut client = ScreenCaptureClient::with_mode(Some(address), CaptureMode::LegacyV2);
+    assert!(matches!(
+        client.capture_full(),
+        Err(TcpCaptureError::IoError(_))
+    ));
     let (frame, _) = client.capture_full().unwrap();
     assert_eq!(frame.pixels, [0x33, 0x22, 0x11, 0xff]);
     peer.join().unwrap();
