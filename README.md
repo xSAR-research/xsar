@@ -1,4 +1,4 @@
-# xSAR Core Architecture — 0.4.2-candidate.2 development
+# xSAR Core Architecture — 0.4.100 development
 
 Rust telemetry data structures with optional reusable QMP transport, pixel
 geometry, PNG decoding, predicate-based image scans and pure card/deal models
@@ -17,6 +17,13 @@ they do not implement a mesh protocol or state-transition engine.
 | Edition | Rust 2024 |
 | Declared minimum | Rust 1.101.0 |
 | Candidate provenance | Base `cbee27824f21d6d04d52adb49a7a0266cfc7ed19` |
+
+Version 0.4.100 is a numeric migration checkpoint for Charlie's
+`major.minor.build` policy, provisional until the required verification passes.
+The build counter is independent of the application's counter and never resets;
+ordinary verified changes advance it once, while major/minor transitions require
+Charlie's direction or approval. This metadata-only migration changes no APIs,
+features, dependencies, capture protocol or runtime behaviour.
 
 The declared minimum remains Rust 1.101.0. The 0.2.1 RGB slice is promoted at
 `987856a0b5cb95aec2788551e050e18f7469b1ef` and consumed by the promoted
@@ -42,8 +49,9 @@ Copyright 2026 xSAR Research.
 | `pixel_format` | `pixel_format` | Portable byte-layout conversion; no external dependencies |
 | `tcp_capture` | `tcp`, also `pixel_format` | Bounded standard-library TCP capture and shared protocol; no QMP/PNG/GUI dependencies |
 
-The current local TCP candidate adds version-3 BGR8 and bounded persistent
-sessions, paired with screen-grab server 0.1.2 and qmp-qemu-socket candidate.13.
+The TCP client supports version-3 BGR8 and bounded persistent sessions. The
+earlier candidate pairing used screen-grab server 0.1.2 and qmp-qemu-socket
+candidate.13.
 See the [TCP protocol and client contract](docs/tcp-capture-protocol.md).
 Version 2 remains an explicit comparison mode; new clients default to version 3.
 The older promotion records below describe their own historical revisions.
@@ -324,6 +332,9 @@ pile-interior adapter. Game fixtures and decisions remain in the application;
 crate tests use synthetic image evidence only.
 
 ## TCP screen capture
+
+Version 3 is the current default; see the [current protocol contract](docs/tcp-capture-protocol.md).
+The wire layout below documents the explicit legacy version-2 comparison mode.
 
 The optional `tcp_capture` feature provides the synchronous `tcp::ScreenCaptureClient`
 and shared `tcp::protocol` used by the Windows screen-grab server on port 9999.

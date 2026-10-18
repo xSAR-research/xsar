@@ -2,6 +2,20 @@
 
 ## Unreleased
 
+## 0.4.100 — numeric migration checkpoint (verification pending)
+
+- Replace the candidate package suffix with Charlie's numeric
+  `major.minor.build` policy, retaining the existing 0.4 line. Build 100 is a
+  migration checkpoint, not an inferred count of historical tested revisions.
+- Keep the crate's build counter independent of qmp-qemu-socket's counter.
+  Advance it once for each changed revision that passes the required tests;
+  major/minor transitions require Charlie's direction or approval.
+- Synchronise package metadata, the crate's own lockfile entry and the current
+  README label. No source behaviour, public API, features, dependencies or
+  capture protocol changes are included. Required Rust verification is pending.
+
+## 0.4.2-candidate.2 — development
+
 - Add candidate 0.4.2-candidate.2: checked version-3 full-screen BGR8 headers,
   opaque RGBA reconstruction, explicit legacy/one-frame/persistent modes,
   correlated response metadata and independent monotonic timing boundaries.
