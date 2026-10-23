@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.8.105 — timing constants, 23 October 2026
+
+- Centralise QMP, TCP and search timings in feature-gated `src/parameters.rs`. Expose reusable QMP defaults while preserving caller overrides and dependency-free defaults.
+- Preserve every timing value, fresh-effect proof and STOP/context rule. No tuning, new dependencies or unsafe code.
+- Required host checks passed 289 tests, with zero failures, ignored tests or filtered tests. No major/minor version change, installation or publication; native Windows/Beast acceptance remains separate.
+
 ## 0.8.104 — publication summary, 23 October 2026
 
 - Deliver reusable, optional search and execution foundations added since

@@ -1,4 +1,6 @@
-# xSAR Core Architecture — 0.8.104 host verified
+# xSAR Core Architecture — 0.8.105 host verified
+
+The timing refactor centralises existing QMP, TCP and search policies in [`src/parameters.rs`](src/parameters.rs), preserving values and caller overrides. Required host verification passed **289 tests** and six feature configurations. Shared QMP defaults are public; neutral feature trees remain dependency-free. See the [timing catalogue](https://github.com/xSAR-research/qmp-qemu-socket/blob/main/docs/Timing-Constants.md). The 0.8.104 qualification below is retained history.
 
 <!-- qualification104:start -->
 Version **0.8.104 is host qualified**. The additive SearchProblem action_cost hook
@@ -58,7 +60,7 @@ they do not implement a mesh protocol or state-transition engine.
 |---|---|
 | License | [AGPL-3.0-or-later](LICENSE) |
 | Repository | https://github.com/xsar-research/xsar |
-| Contact | charlie@xsar.com.au / info@xsar.com.au |
+| Contact | charlie`xsar.com.au / info`xsar.com.au |
 | Edition | Rust 2024 |
 | Declared minimum | Rust 1.101.0 |
 | Candidate provenance | Base `cbee27824f21d6d04d52adb49a7a0266cfc7ed19` |

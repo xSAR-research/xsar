@@ -43,11 +43,11 @@ impl Default for QmpConfig {
     /// Preserve the original controller's per-I/O and input timing defaults.
     fn default() -> Self {
         Self {
-            io_timeout: Duration::from_millis(750),
-            screendump_timeout: Duration::from_secs(5),
-            pointer_settle_delay: Duration::from_millis(100),
-            mouse_hold: Duration::from_millis(50),
-            key_hold: Duration::from_millis(20),
+            io_timeout: crate::parameters::QMP_IO_TIMEOUT,
+            screendump_timeout: crate::parameters::QMP_SCREENDUMP_TIMEOUT,
+            pointer_settle_delay: crate::parameters::POINTER_SETTLE_DELAY,
+            mouse_hold: crate::parameters::MOUSE_HOLD,
+            key_hold: crate::parameters::KEY_HOLD,
         }
     }
 }
@@ -57,7 +57,9 @@ impl QmpConfig {
     /// Reject invalid socket timeouts before starting a connection exchange.
     fn validate(self) -> Result<Self, QmpError> {
         if self.io_timeout.is_zero() || self.screendump_timeout.is_zero() {
-            return Err(QmpError::Protocol("QMP socket timeouts must be non-zero".to_owned()));
+            return Err(QmpError::Protocol(
+                "QMP socket timeouts must be non-zero".to_owned(),
+            ));
         }
 
         Ok(self)
@@ -258,7 +260,10 @@ impl QmpClient {
                 })),
             )
             .map(|_| ());
-        let restore_result = self.reader.get_ref().set_read_timeout(Some(self.config.io_timeout));
+        let restore_result = self
+            .reader
+            .get_ref()
+            .set_read_timeout(Some(self.config.io_timeout));
 
 
         match capture_result {
@@ -313,7 +318,12 @@ impl QmpClient {
         guest_width: u32,
         guest_height: u32,
     ) -> Result<(), QmpError> {
-        self.click_with_hold(guest_point, guest_width, guest_height, self.config.mouse_hold)
+        self.click_with_hold(
+            guest_point,
+            guest_width,
+            guest_height,
+            self.config.mouse_hold,
+        )
     }
 
 
@@ -375,7 +385,9 @@ impl QmpClient {
     /// QEMU validates the qcode. An empty string is rejected before sending input.
     pub fn press_key(&mut self, qcode: &str, hold: Duration) -> Result<(), QmpError> {
         if qcode.is_empty() {
-            return Err(QmpError::Protocol("QEMU qcode must be non-empty".to_owned()));
+            return Err(QmpError::Protocol(
+                "QEMU qcode must be non-empty".to_owned(),
+            ));
         }
 
         self.send_press_release(
@@ -535,11 +547,12 @@ impl QmpClient {
         let _ = self.writer.shutdown(Shutdown::Both);
         let _ = self.reader.get_ref().shutdown(Shutdown::Both);
 
-        let recovery = Self::connect_with_config(&self.socket_path, self.config).and_then(|mut fresh| {
-            fresh
-                .execute("input-send-event", Some(up_arguments))
-                .map(|_| ())
-        });
+        let recovery =
+            Self::connect_with_config(&self.socket_path, self.config).and_then(|mut fresh| {
+                fresh
+                    .execute("input-send-event", Some(up_arguments))
+                    .map(|_| ())
+            });
 
 
         match recovery {
@@ -742,11 +755,20 @@ mod tests {
     /// Validate timeout configuration before even attempting to open a socket.
     #[test]
     fn rejects_zero_socket_timeouts_before_connecting() {
-        let mut config = QmpConfig { io_timeout: Duration::ZERO, ..QmpConfig::default() };
-        assert!(matches!(QmpClient::connect_with_config(Path::new("does-not-exist"), config), Err(QmpError::Protocol(_))));
+        let mut config = QmpConfig {
+            io_timeout: Duration::ZERO,
+            ..QmpConfig::default()
+        };
+        assert!(matches!(
+            QmpClient::connect_with_config(Path::new("does-not-exist"), config),
+            Err(QmpError::Protocol(_))
+        ));
         config.io_timeout = Duration::from_millis(500);
         config.screendump_timeout = Duration::ZERO;
-        assert!(matches!(QmpClient::connect_with_config(Path::new("does-not-exist"), config), Err(QmpError::Protocol(_))));
+        assert!(matches!(
+            QmpClient::connect_with_config(Path::new("does-not-exist"), config),
+            Err(QmpError::Protocol(_))
+        ));
     }
 
 
@@ -754,16 +776,24 @@ mod tests {
     #[test]
     fn uses_custom_config_and_caller_selected_qcode() {
         let (client_stream, mut server_stream) = UnixStream::pair().expect("create socket pair");
-        server_stream.set_read_timeout(Some(Duration::from_secs(2))).expect("set server timeout");
+        server_stream
+            .set_read_timeout(Some(Duration::from_secs(2)))
+            .expect("set server timeout");
         let server_reader = server_stream.try_clone().expect("clone server stream");
         let server = thread::spawn(move || {
             let mut reader = BufReader::new(server_reader);
             start_mock_qmp(&mut server_stream, &mut reader);
             let down = read_request(&mut reader);
-            assert_eq!(first_input_event(&down)["data"]["key"], json!({ "type": "qcode", "data": "space" }));
+            assert_eq!(
+                first_input_event(&down)["data"]["key"],
+                json!({ "type": "qcode", "data": "space" })
+            );
             assert_eq!(first_input_event(&down)["data"]["down"], true);
             let up = read_request(&mut reader);
-            assert_eq!(first_input_event(&up)["data"]["key"], json!({ "type": "qcode", "data": "space" }));
+            assert_eq!(
+                first_input_event(&up)["data"]["key"],
+                json!({ "type": "qcode", "data": "space" })
+            );
             assert_eq!(first_input_event(&up)["data"]["down"], false);
             acknowledge(&mut server_stream, &up);
             acknowledge(&mut server_stream, &down);
@@ -775,12 +805,27 @@ mod tests {
             mouse_hold: Duration::ZERO,
             key_hold: Duration::ZERO,
         };
-        let mut client = QmpClient::from_connected_stream_with_config(Path::new("mock-qmp"), client_stream, config)
-            .expect("connect configured client");
-        assert_eq!(client.reader.get_ref().read_timeout().unwrap(), Some(config.io_timeout));
-        assert_eq!(client.writer.write_timeout().unwrap(), Some(config.io_timeout));
-        assert!(matches!(client.press_key_default(""), Err(QmpError::Protocol(_))));
-        client.press_key_default("space").expect("send caller-selected qcode");
+        let mut client = QmpClient::from_connected_stream_with_config(
+            Path::new("mock-qmp"),
+            client_stream,
+            config,
+        )
+        .expect("connect configured client");
+        assert_eq!(
+            client.reader.get_ref().read_timeout().unwrap(),
+            Some(config.io_timeout)
+        );
+        assert_eq!(
+            client.writer.write_timeout().unwrap(),
+            Some(config.io_timeout)
+        );
+        assert!(matches!(
+            client.press_key_default(""),
+            Err(QmpError::Protocol(_))
+        ));
+        client
+            .press_key_default("space")
+            .expect("send caller-selected qcode");
         server.join().expect("join custom config mock");
     }
 
@@ -798,10 +843,13 @@ mod tests {
             start_mock_qmp(&mut server_stream, &mut reader);
             let request = read_request(&mut reader);
             assert_eq!(request["execute"], "input-send-event");
-            assert_eq!(request["arguments"], json!({ "events": [
+            assert_eq!(
+                request["arguments"],
+                json!({ "events": [
                 { "type": "abs", "data": { "axis": "x", "value": 341 } },
                 { "type": "abs", "data": { "axis": "y", "value": 15169 } }
-            ] }));
+            ] })
+            );
             acknowledge(&mut server_stream, &request);
             let mut line = String::new();
             assert_eq!(reader.read_line(&mut line).expect("read after movement"), 0);
@@ -821,7 +869,8 @@ mod tests {
             assert!(client.move_pointer(point, width, height).is_err());
         }
 
-        client.move_pointer(PixelPoint::new(20, 500), 1920, 1080)
+        client
+            .move_pointer(PixelPoint::new(20, 500), 1920, 1080)
             .expect("acknowledged absolute movement");
         drop(client);
         server.join().expect("join movement mock");
@@ -841,17 +890,27 @@ mod tests {
             start_mock_qmp(&mut server_stream, &mut reader);
             let request = read_request(&mut reader);
             assert_eq!(request["execute"], "input-send-event");
-            assert_eq!(request["arguments"]["events"].as_array().expect("events").len(), 2);
-            write_packet(&mut server_stream, &json!({
-                "error": { "class": "GenericError", "desc": "movement rejected" },
-                "id": request_id(&request)
-            }));
+            assert_eq!(
+                request["arguments"]["events"]
+                    .as_array()
+                    .expect("events")
+                    .len(),
+                2
+            );
+            write_packet(
+                &mut server_stream,
+                &json!({
+                    "error": { "class": "GenericError", "desc": "movement rejected" },
+                    "id": request_id(&request)
+                }),
+            );
             let mut line = String::new();
             assert_eq!(reader.read_line(&mut line).expect("read after error"), 0);
         });
         let mut client = QmpClient::from_connected_stream(Path::new("mock-qmp"), client_stream)
             .expect("connect mock client");
-        let error = client.move_pointer(PixelPoint::new(20, 500), 1920, 1080)
+        let error = client
+            .move_pointer(PixelPoint::new(20, 500), 1920, 1080)
             .expect_err("movement requires a successful acknowledgement");
         assert!(matches!(error, QmpError::Command(_)));
         drop(client);
@@ -899,7 +958,8 @@ mod tests {
             .expect_err("non-UTF-8 output path must fail");
         assert!(matches!(non_utf8, QmpError::CapturePath(_)));
 
-        let nul_path = client.screendump_png(Path::new("/tmp/frame\0.png"))
+        let nul_path = client
+            .screendump_png(Path::new("/tmp/frame\0.png"))
             .expect_err("NUL-containing output path must fail");
         assert!(matches!(nul_path, QmpError::CapturePath(_)));
 
@@ -950,7 +1010,9 @@ mod tests {
             // client that does not wait for it will reveal a premature down.
             reader
                 .get_ref()
-                .set_read_timeout(Some(QmpConfig::default().pointer_settle_delay + Duration::from_millis(30)))
+                .set_read_timeout(Some(
+                    QmpConfig::default().pointer_settle_delay + Duration::from_millis(30),
+                ))
                 .expect("set movement gate timeout");
             let mut premature = String::new();
             let error = reader

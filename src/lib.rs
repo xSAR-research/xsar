@@ -1,4 +1,4 @@
-/*! 
+/*!
 # xSAR Architecture Core
 Drone telemetry data structures and optional reusable QMP and image primitives.
 
@@ -32,6 +32,15 @@ pub mod execution;
 
 
 use std::fmt;
+
+
+/// Shared transport defaults and internal search timing, gated with their owners.
+#[cfg(any(
+    feature = "search",
+    feature = "tcp_capture",
+    all(feature = "qmp", unix)
+))]
+pub mod parameters;
 
 
 /// Dependency-free pixel geometry and checked QMP absolute-coordinate conversion.

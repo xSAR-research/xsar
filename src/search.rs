@@ -21,6 +21,8 @@
     )
 )]
 
+use crate::parameters::SEARCH_PROGRESS_INTERVAL as PROGRESS_INTERVAL;
+
 use std::{
     cmp::Ordering,
     collections::{BinaryHeap, HashMap},
@@ -63,7 +65,7 @@ impl Default for SearchLimits {
             max_states: 2_000_000,
             max_expansions: 2_000_000,
             max_memory_bytes: 512 * 1024 * 1024,
-            max_duration: std::time::Duration::from_secs(120),
+            max_duration: crate::parameters::DEFAULT_SEARCH_DURATION,
         }
     }
 }
@@ -261,10 +263,6 @@ const MIN_COLLECTION_CAPACITY: usize = 4;
 /// The standard map exposes usable element capacity rather than allocated bytes.
 /// This deliberately generous factor is an estimate, not an allocator contract.
 const HASH_MEMORY_FACTOR: usize = 4;
-
-
-/// Minimum elapsed search time between periodic non-final observer notifications.
-const PROGRESS_INTERVAL: Duration = Duration::from_millis(200);
 
 
 /// Borrowed synchronous observer and its most recent notification time.

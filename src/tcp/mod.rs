@@ -5,9 +5,14 @@
 //! full coverage, and discards the entire connection after any capture error.
 //! No capture request or game input is replayed within a failed operation.
 
+use crate::parameters::{
+    TCP_CANCEL_POLL as CANCEL_POLL, TCP_CONNECT_TIMEOUT as CONNECT_TIMEOUT,
+    TCP_SOCKET_TIMEOUT as SOCKET_TIMEOUT,
+};
 use std::io::{self, Read, Write};
 use std::net::{SocketAddr, TcpStream};
 use std::sync::atomic::{AtomicBool, Ordering};
+
 use std::time::{Duration, Instant};
 
 
@@ -17,18 +22,6 @@ pub mod protocol;
 
 /// Default numeric guest-forwarding endpoint; DNS resolution is not performed.
 const DEFAULT_SERVER_ADDR: &str = "127.0.0.1:9999";
-
-
-/// One connection attempt's absolute maximum duration.
-const CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
-
-
-/// Independent absolute limit for request write, header wait and payload read.
-const SOCKET_TIMEOUT: Duration = Duration::from_secs(10);
-
-
-/// Maximum socket-blocking interval before checking cancellation and total deadline.
-const CANCEL_POLL: Duration = Duration::from_millis(100);
 
 
 /// Explicit wire and lifetime selection; no protocol fallback is inferred.
