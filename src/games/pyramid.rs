@@ -395,3 +395,23 @@ impl CompleteDeal {
         Ok(self.tableau[row * (row + 1) / 2 + column])
     }
 }
+
+
+/// Pure planning actions, checked locations and route evidence.
+#[cfg(feature = "pyramid_rules")]
+pub mod planning;
+
+
+/// Pure original-deal transitions; never grants guest input authority.
+#[cfg(feature = "pyramid_rules")]
+pub mod rules;
+
+
+/// Independent explicit-pile route validation.
+#[cfg(feature = "pyramid_rules")]
+pub mod replay;
+
+
+/// Complete-deal adapter to bounded generic search.
+#[cfg(feature = "pyramid_search")]
+pub mod search;

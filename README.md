@@ -1,8 +1,53 @@
-# xSAR Core Architecture — 0.4.100 development
+# xSAR Core Architecture — 0.8.104 host verified
+
+<!-- qualification104:start -->
+Version **0.8.104 is host qualified**. The additive SearchProblem action_cost hook
+defaults to one, permits checked zero/non-unit costs and keeps cumulative cost
+separate from immutable route depth. State dominance is checked cost/depth;
+zero-cost cycles do not create equal-label histories. Exact proof concerns the
+declared primary cost. Existing Pyramid APIs retain LogicalActions; the new
+explicit PyramidCost::CardMatches adapter counts MATCH/KING as one and DRAW/RECYCLE
+as zero. Pure tableau-removal scoring and aggregate fallback bounds remain.
+
+Required shared tests passed **289/0/0**, matrix **14/55/25/67/57/99** (overlapping),
+real app **1260/0/0**, private unchanged-source console **80/0/0**,
+all zero filtered. Strict private docs/Clippy/native release, scoped formatting
+and dependency-free neutral trees passed. No dependency or unsafe code was added.
+Consumer calibration, UI, actual input and challenge lifetime stay in the app.
+Fresh gameplay is separate. See the
+[paired verification](../qmp-qemu-socket/docs/Verification-2.8.119.md).
+The 0.7.103 block below is retained history.
+<!-- qualification104:end -->
+
+<!-- qualification103:start -->
+Version **0.7.103 is host qualified** for additive scored fallback search. Existing
+`solve` and `solve_with_options` contracts are unchanged. The new API first seeks
+a full goal, then spends only the remaining aggregate budget on unpruned scored
+search. Exhaustion proves maximum score and shortest equal-score cost; a bound
+reports only best found. Cancellation, including a final progress callback STOP,
+allocation and invariant failure expose no executable prefix.
+
+The pure Pyramid adapter scores tableau removals only. Consumers independently
+replay returned routes and own any input/completion authority. App 2.7.118 owns
+native calibration and stops automatic play after an exactly verified partial
+endpoint. Full shared checks passed **278/0/0**, six feature configurations passed
+**14/46/25/58/57/89** (overlapping), the real app passed **1,218/0/0** and the private
+unchanged-source console passed **80/0/0**, all zero filtered. Strict private docs,
+Clippy, release and four dependency-free neutral feature trees passed. The original
+console source and historical lock remain untouched; only the private copy updates
+the xSAR lock entry for compatibility testing. Unchanged shared successes were
+sealed and retained during an app-only assertion correction. Final paired
+documentation/preservation audit passed: 12 documents, 309 local links and 40 review
+paths, with exercised inputs preserved. Fresh app gameplay is not supplied by
+host checks. Defaults, dependency graph and old APIs remain unchanged. See the app's
+[verification record](../qmp-qemu-socket/docs/Verification-2.7.118.md). The 0.6.102
+evidence below is retained history.
+<!-- qualification103:end -->
 
 Rust telemetry data structures with optional reusable QMP transport, pixel
 geometry, PNG decoding, predicate-based image scans and pure card/deal models
-with a bounded Pyramid JSON codec.
+with a bounded Pyramid JSON codec, optional generic bounded search and observed
+execution sequencing, and a pure Pyramid planning adapter.
 
 The existing `NodeState`, `FlightModeStatus`, `Position`,
 `FlightControllerState` and `MeshTelemetry` remain at the crate root. Default
@@ -18,12 +63,27 @@ they do not implement a mesh protocol or state-transition engine.
 | Declared minimum | Rust 1.101.0 |
 | Candidate provenance | Base `cbee27824f21d6d04d52adb49a7a0266cfc7ed19` |
 
-Version 0.4.100 is a numeric migration checkpoint for Charlie's
-`major.minor.build` policy, provisional until the required verification passes.
-The build counter is independent of the application's counter and never resets;
-ordinary verified changes advance it once, while major/minor transitions require
-Charlie's direction or approval. This metadata-only migration changes no APIs,
-features, dependencies, capture protocol or runtime behaviour.
+Version **0.6.102 is host verified** for the approved additive search-options
+milestone: 266 tests passed, zero failed/ignored, all required checks/release
+and six feature configurations passed, and the real app 2.6.108 consumer passed
+1,043 tests plus its required checks. A private frozen-console-copy smoke passed
+80 tests; the original console was not built or changed. `SearchOptions` supplies a positive heuristic weight;
+`solve_with_options` adds borrowed synchronous progress while existing `solve`
+signatures retain exact behaviour. App 2.6.108 consumes the addition directly;
+accepted console 0.8.4 remains frozen. No feature, dependency, MSRV, edition or
+registry publication change is included. One agreed minor/build is earned after the complete required pass. The application's
+[verification record](../qmp-qemu-socket/docs/Verification-2.6.108.md) records
+paired repository results and clearly separates host proof from live acceptance.
+Native Continuous remains unavailable in the consumer without positive native
+progress/standard-target evidence; this crate does not infer or own that policy.
+
+Previous host verification: Version **0.5.101 is host verified** for the approved reusable planning/execution
+milestone. Complete required checks passed, applying one agreed minor increase
+from 0.4.100 and exactly one build increment. The build counter is independent
+of the application's counter and never resets. The
+[current verification record](docs/Verification-0.5.101.md) records 256 passing
+all-feature tests, the feature matrix and real application-consumer verification.
+Live guest acceptance and publication remain separate decisions.
 
 The declared minimum remains Rust 1.101.0. The 0.2.1 RGB slice is promoted at
 `987856a0b5cb95aec2788551e050e18f7469b1ef` and consumed by the promoted
@@ -40,11 +100,15 @@ Copyright 2026 xSAR Research.
 | Feature | Modules | Platform and dependency boundary |
 |---|---|---|
 | Default (`[]`) | Existing telemetry and `geometry` | `std`, no external dependencies |
+| `search` | `search` | Portable `std`; generic unit-cost A*/Dijkstra with optional weighted guidance, no external dependencies |
+| `execution` | `execution` | Portable `std`; generic finite observed-operation sequencing, no external dependencies |
 | `qmp` | `qmp` | Unix sockets; optional `serde_json` and `thiserror` |
 | `image_matching` | `image_matching` | Portable `std`; no external dependencies |
 | `png` | `capture`, also `image_matching` | Optional PNG-only `image` and `thiserror` |
 | `cards` | `games::cards` | Portable `std`; no external dependencies |
 | `pyramid` | `games::pyramid`, also `games::cards` | Enables `cards`; no external dependencies |
+| `pyramid_rules` | `games::pyramid::{planning,rules,replay}` | Enables `pyramid` and existing optional `thiserror`; no JSON, capture or input dependencies |
+| `pyramid_search` | `games::pyramid::search` and the rules modules | Enables `pyramid_rules` and `search`; no JSON, capture or input dependencies |
 | `pyramid_json` | `pyramid_json`, also both model modules | Optional `serde` with std/derive and existing `serde_json`; no QMP/image/GUI dependencies |
 | `pixel_format` | `pixel_format` | Portable byte-layout conversion; no external dependencies |
 | `tcp_capture` | `tcp`, also `pixel_format` | Bounded standard-library TCP capture and shared protocol; no QMP/PNG/GUI dependencies |
@@ -67,9 +131,13 @@ The promoted qmp-qemu-socket 2.0.11 application selects the RGB release:
 xsar = { git = "https://github.com/xsar-research/xsar", rev = "987856a0b5cb95aec2788551e050e18f7469b1ef", default-features = false, features = ["qmp", "png", "image_matching"] }
 ```
 
-That revision does not include the new model/JSON APIs. For paired foundation
-development, use an isolated temporary path dependency outside promotion files.
-The initial console consumer is separate work, not implemented by this crate.
+That revision does not include the new model/JSON or planning APIs. The initial
+qmp-qemu-socket 2.5.102 host-verified consumer used this checkout through
+`../xsar`, selecting `pyramid_search` and `execution` alongside its existing
+transport, image and JSON features. Those historical consumer checks passed. Current app 2.6.108 uses the same
+relative path plus the additive options/progress API; new paired host checks
+passed in complete attempt 0002. The path does not identify a Git revision pin. The accepted console remains frozen at
+0.8.4, with no migration or console dependency added to the application.
 Promote each accepted crate slice first, then pin consumers to its actual Git
 revision and revalidate with locked dependencies. Do not substitute a host-only
 path or unavailable registry version in promotion manifests. Registry
@@ -97,7 +165,8 @@ Tableau order is top-to-bottom, left-to-right: rows 0..6 and columns 0..row.
 `card_at(row, column)` checks those bounds before calculating the array index.
 Stock order is first-draw order; ordinal zero is the initial visible LEFT card
 before any advance. These are original positions, not a live stock cursor or
-the application's bottom-up CV target indices. No solver or move rules exist.
+the application's bottom-up CV target indices. The base `pyramid` feature remains
+model-only; rules and search require their separate opt-in features.
 
 Metadata validates a nonempty ASCII deal token (at most 64 bytes), producer
 (64 UTF-8 bytes), source (256 UTF-8 bytes) and optional evidence token (128 ASCII
@@ -106,6 +175,85 @@ characters. Source/evidence labels are never opened as paths. Synthetic/manual
 fixtures require `NotApplicable` restoration; screen recognition requires the
 producer's `Verified` declaration. A valid declaration is not proof of actual
 recognition, restoration, authenticity or input authority.
+
+## Generic search and finite observed execution
+
+`search::SearchProblem` supplies a copied/hashable state, copied action, finite
+successor iterator, initial state and goal. Optional admissible guidance and a
+sound impossible-state predicate support A*. `search::solve` returns typed
+`SearchOutcome<Action>`: solved, proved unsolvable or stopped without proof.
+Dijkstra bypasses both optional guidance callbacks. Actions have unit cost;
+the original `solve` entry point retains exact ordering. The additive
+`solve_with_options` accepts `SearchOptions` with positive `heuristic_weight`;
+weight one is exact A*, larger weights may return longer routes. Dijkstra
+ignores the weight and both optional guidance callbacks. No universal speedup
+is promised. Deterministic tie ordering, immutable
+predecessor history, reopened states, fallible collection growth and cooperative
+cancellation remain engine responsibilities.
+
+Defaults are 2,000,000 retained records, 2,000,000 expansions, 512 MiB of estimated
+collection storage and 120 seconds. The memory estimate accounts for actual
+generic state/action sizes; it does not measure RSS, allocator metadata, the
+caller's problem or its successor iterator. Callbacks must terminate and keep
+their own work bounded. A synchronous callback cannot be interrupted mid-call.
+
+`execution::Sequencer<Operation, Epoch>` consumes a finite sequence of typed
+application operations. Single-use tickets bind precondition observations,
+dispatch receipts, waits and effect observations to the correct run and phase.
+It reserves each whole logical action's gesture budget before dispatch, returns
+each operation once and commits an action only after the caller verifies its
+effect. Changed authority, STOP, failed or uncertain delivery, stale replies,
+failed evidence, exhausted budgets and deadlines terminate the run. There is no
+retry or resume API. Deadlines are cooperative at API boundaries.
+
+The sequencer performs no I/O and recognises no game. The application owns fresh
+evidence, native coordinates, transport probes, STOP/context checks immediately
+before every gesture, and the meaning of acknowledgement versus effect. These
+generic modules have non-card consumer tests; no other game's rules are added.
+The additional public consumer in `tests/search_execution.rs` connects both:
+generic search finds SetSeven/Apply, then the neutral sequencer verifies those
+two actions through Focus/WriteSeven/PressApply. It requires only `search` and
+`execution`, without cards, JSON, images or transport. It passed both the
+all-feature suite and the independent `search,execution` feature configuration.
+
+`SearchProgress` contains actual cumulative `SearchStats` plus `finished`.
+The optional borrowed observer receives initial, periodic (at most once per
+200 ms), and one final notification matching a normally returned outcome.
+The final notification bypasses throttling. Callbacks must return promptly;
+cancellation is checked around them but cannot interrupt a callback. Search and
+non-final observer time count against the deadline. A caller panic propagates
+without a normal final-notification guarantee. No thread, queue, I/O or domain
+policy is introduced. `SearchOptions::default()` preserves exact A*, and old
+public callers/feature contracts remain compatible.
+
+## Pure Pyramid planning adapter
+
+With `pyramid_rules`, `games::pyramid::planning` owns checked `TableauLocation`,
+`Location`, `RecordedAction`, compact `SearchState` and replay/error types.
+Public mappings use fixed one-based rows/columns; `CompleteDeal::card_at` keeps
+its existing explicitly zero-based boundary. Card identities remain solely in
+the immutable complete deal. Presence state never copies or invents identities.
+
+`games::pyramid::rules` preserves the accepted two-recycle profile: exposed
+sum-13 pairs, single Kings, both visible DL/DR tops playable, preserved remaining
+stock encounter order, and tableau-clear goal. `replay::replay` independently
+simulates explicit stock/waste piles without calling solver transitions or
+pruning. It accepts at most 4,096 logical actions. `search::solve` in that Pyramid
+namespace borrows the deal and adapts these rules to the generic search engine.
+Pyramid's fixed 64-successor bound is confined to this adapter. Its additive
+`search::solve_with_options` forwards the same options/observer contract without
+changing rules, action costs or independent replay responsibility.
+
+The upstream 15/44 costs and accepted separate v6 48-action/v7 49-action routes
+are retained regression inputs, with independent replay and the
+[MIT provenance notice](third_party/README.md). Their historical manual success
+does not authenticate a current live board. JSON fixture tests additionally
+select `pyramid_json`; pure rules and mappings work without that codec.
+
+The active application consumes xSAR directly for this planning and sequencing.
+It alone owns the same-session restored-acquisition receipt, exact export-byte
+binding, calibrated observations and guarded QMP execution. The accepted console
+0.8.4 is byte-unchanged; its earlier delivery evidence remains separate.
 
 ## Pyramid JSON schemas 1 and 2
 

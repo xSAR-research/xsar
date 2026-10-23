@@ -21,6 +21,16 @@ pixels; explicit version-2 BGRA8 compatibility and single-frame version-3 modes
 remain available (also enables `pixel_format`).
 */
 
+/// Generic bounded unit-cost A*/Dijkstra, without game or transport dependencies.
+#[cfg(feature = "search")]
+pub mod search;
+
+
+/// Finite observed-action sequencing without transport or game authority.
+#[cfg(feature = "execution")]
+pub mod execution;
+
+
 use std::fmt;
 
 
@@ -69,9 +79,13 @@ pub mod pyramid_json;
 /// Core operational status of an xSAR node.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum NodeState {
+    /// An emergency condition has been reported by the node.
     EmergencyEvent = -1,
+    /// The node is initialising its services.
     Initialising = 0,
+    /// The node is waiting in standby.
     Standby = 1,
+    /// The node is active.
     Active = 2,
 }
 
@@ -93,15 +107,25 @@ impl fmt::Display for NodeState {
 /// Granular flight controller modes and states.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum FlightModeStatus {
+    /// An emergency flight-controller condition has been reported.
     EmergencyEvent = -1,
+    /// Preflight checks are in progress.
     PreFlightCheck = 0,
+    /// Preflight preparation is complete and launch is ready.
     ReadyToLaunch = 1,
+    /// The aircraft is in flight.
     InFlight = 2,
+    /// The aircraft is holding a hovering position.
     Hovering = 3,
+    /// The aircraft is investigating a target or observation.
     Investigating = 4,
+    /// The aircraft is following a search pattern.
     SearchingPattern = 5,
+    /// The aircraft has been assigned the master-drone role.
     AssignedMasterDrone = 6,
+    /// The aircraft is returning to base.
     ReturningToBase = 7,
+    /// The controller reports its landing mode.
     Land = 8,
 }
 
@@ -132,19 +156,28 @@ pub type Position = (f64, f64, f64);
 /// Represents the comprehensive internal flight controller telemetry state.
 #[derive(Debug, Clone, PartialEq)]
 pub struct FlightControllerState {
+    /// Identifier assigned to the controller within its mesh.
     pub mesh_assigned_identifier: u32,
+    /// Caller-supplied Cartesian position; this model performs no unit conversion.
     pub position: Position,
+    /// Caller-supplied battery reading; units and range are not validated here.
     pub battery_level: f32,
+    /// Current reported flight-controller mode.
     pub flight_mode: FlightModeStatus,
+    /// Current reported operational state of the node.
     pub node_state: NodeState,
 }
 
 /// Represents compact telemetry data packets broadcast by a drone to peer mesh nodes.
 #[derive(Debug, Clone, PartialEq)]
 pub struct MeshTelemetry {
+    /// Compact identifier assigned to the broadcasting node.
     pub node_assigned_identifier: u8,
+    /// Caller-supplied Cartesian position; this model performs no unit conversion.
     pub position: Position,
+    /// Caller-supplied battery reading; units and range are not validated here.
     pub battery_level: f32,
+    /// Current reported operational state of the broadcasting node.
     pub node_state: NodeState,
 }
 
