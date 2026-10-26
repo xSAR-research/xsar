@@ -1,4 +1,22 @@
-# xSAR Core Architecture — 0.8.105 host verified
+# xSAR Core Architecture — 0.9.0 host verified
+
+## 0.9.0 — additive cooperative search control
+
+Add `solve_with_control`, `solve_best_effort_with_control` and Pyramid
+`solve_best_effort_with_cost_and_control`. Existing APIs retain never-paused behaviour.
+The caller-owned checkpoint retains the same frontier and reports only intentional
+suspension; each report is bounded by its measured callback span. Active elapsed time
+is shared by deadlines and statistics, including cancelled outcomes and best-effort
+fallback. Cancellation is checked before and after the callback. Ordinary observer,
+problem and callback overhead remain counted; a blocking callback must cooperate with
+cancellation. No dependency or input capability is added.
+
+Host qualification passed 296 all-feature tests with zero failures, ignored or filtered
+tests, plus default/feature checks, strict private documentation and Clippy. The native
+qmp-qemu-socket 2.9.139 consumer passed its full qualification and release build.
+Fresh guest acceptance remains application-owned.
+
+## Retained 0.8.105 timing refactor
 
 The timing refactor centralises existing QMP, TCP and search policies in [`src/parameters.rs`](src/parameters.rs), preserving values and caller overrides. Required host verification passed **289 tests** and six feature configurations. Shared QMP defaults are public; neutral feature trees remain dependency-free. See the [timing catalogue](https://github.com/xSAR-research/qmp-qemu-socket/blob/main/docs/Timing-Constants.md). The 0.8.104 qualification below is retained history.
 

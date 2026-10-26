@@ -338,7 +338,30 @@ pub fn solve_best_effort<P: BestEffortProblem>(
     options: SearchOptions,
     observer: Option<&mut dyn FnMut(SearchProgress)>,
 ) -> BestEffortOutcome<P::Action> {
+    solve_best_effort_with_control(problem, limits, cancel, options, observer, None)
+}
+
+
+/// Seek a full goal and scored fallback with a cooperative caller checkpoint.
+///
+/// Search, partial-proof and cumulative-reporting contracts match
+/// [`solve_best_effort`]. Checkpoint, pause accounting, cancellation wake-up and
+/// callback contracts match [`solve_with_control`]. Both search phases retain
+/// the same invocation clock and cumulative intentional suspension; switching to
+/// unpruned fallback never restores spent time. Existing observer overhead counts.
+///
+/// # Panics
+/// Caller problem, observer and checkpoint panics propagate without final reporting.
+pub fn solve_best_effort_with_control<P: BestEffortProblem>(
+    problem: &P,
+    limits: SearchLimits,
+    cancel: &AtomicBool,
+    options: SearchOptions,
+    observer: Option<&mut dyn FnMut(SearchProgress)>,
+    checkpoint: Option<&dyn Fn() -> Duration>,
+) -> BestEffortOutcome<P::Action> {
     let mut engine = Engine::new(limits, cancel);
+    engine.checkpoint = checkpoint;
     let mut progress = ProgressReporter::new(observer);
     progress.report(engine.stats(), false);
     let mut candidate = Candidate {
@@ -388,9 +411,12 @@ pub fn solve_best_effort<P: BestEffortProblem>(
                         .saturating_mul(size_of::<P::Action>()),
                 );
                 let started = engine.started;
+                let paused = engine.paused.get();
                 drop(engine);
                 let mut fallback = Engine::new(remaining, cancel);
                 fallback.started = started;
+                fallback.checkpoint = checkpoint;
+                fallback.paused.set(paused);
                 let first_reason = first.err();
                 if let Err(reason) = fallback.poll() {
                     finish(

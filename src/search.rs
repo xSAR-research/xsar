@@ -24,6 +24,7 @@
 use crate::parameters::SEARCH_PROGRESS_INTERVAL as PROGRESS_INTERVAL;
 
 use std::{
+    cell::Cell,
     cmp::Ordering,
     collections::{BinaryHeap, HashMap},
     hash::Hash,
@@ -37,11 +38,18 @@ use std::{
 mod best_effort;
 
 
-pub use best_effort::{BestEffortOutcome, BestEffortProblem, PartialProof, solve_best_effort};
+pub use best_effort::{
+    BestEffortOutcome, BestEffortProblem, PartialProof, solve_best_effort,
+    solve_best_effort_with_control,
+};
 
 
 #[cfg(test)]
 mod cost_tests;
+
+
+#[cfg(test)]
+mod control_tests;
 
 
 /// Explicit resource limits for one synchronous search.
@@ -53,7 +61,7 @@ pub struct SearchLimits {
     pub max_expansions: usize,
     /// Conservative collection-storage allowance in bytes, excluding process RSS.
     pub max_memory_bytes: usize,
-    /// Cooperative wall-clock deadline measured from the start of search.
+    /// Cooperative deadline from search start, excluding explicit control pauses.
     pub max_duration: std::time::Duration,
 }
 
@@ -116,7 +124,7 @@ pub struct SearchStats {
     pub states: usize,
     /// Largest number of frontier entries retained at once.
     pub peak_frontier: usize,
-    /// Elapsed synchronous search time, excluding input and report rendering.
+    /// Elapsed search time, excluding explicit control pauses, input and report rendering.
     pub elapsed: std::time::Duration,
 }
 
@@ -140,7 +148,7 @@ pub enum SearchStop {
     ExpansionLimit,
     /// Conservative collection-memory allowance reached.
     MemoryLimit,
-    /// Cooperative wall-clock deadline reached.
+    /// Cooperative active-search deadline reached.
     TimeLimit,
     /// The caller's atomic cancellation flag was set.
     Cancelled,
@@ -425,8 +433,12 @@ struct Engine<'a, S, A> {
     limits: SearchLimits,
     /// Caller-owned flag, observed before work and between successors.
     cancel: &'a AtomicBool,
-    /// Start of this invocation's elapsed-time budget.
+    /// Wall-clock origin shared by guided and unpruned phases.
     started: Instant,
+    /// Optional caller checkpoint; it may wait cooperatively without losing state.
+    checkpoint: Option<&'a dyn Fn() -> Duration>,
+    /// Measured intentional suspension, shared across phases when reporting time.
+    paused: Cell<Duration>,
     /// Accumulated counters, with elapsed time refreshed when reporting.
     stats: SearchStats,
 }
@@ -442,6 +454,8 @@ impl<'a, S: Copy + Eq + Hash, A: Copy> Engine<'a, S, A> {
             limits,
             cancel,
             started: Instant::now(),
+            checkpoint: None,
+            paused: Cell::new(Duration::ZERO),
             stats: SearchStats {
                 expanded: 0,
                 generated: 0,
@@ -453,13 +467,48 @@ impl<'a, S: Copy + Eq + Hash, A: Copy> Engine<'a, S, A> {
     }
 
 
-    /// Give cancellation precedence and stop once the elapsed budget is spent.
+    /// Exclude only the reported intentional pause within a measured checkpoint.
+    ///
+    /// Clamp over-reporting to the callback's own span; saturate cumulative arithmetic.
+    fn account_pause(&self, reported: Duration, measured: Duration) {
+        self.paused
+            .set(self.paused.get().saturating_add(reported.min(measured)));
+    }
+
+
+    /// Measure active elapsed time against a supplied monotonic-clock reading.
+    ///
+    /// Earlier readings and any subtraction underflow produce zero.
+    fn active_elapsed_at(&self, now: Instant) -> Duration {
+        now.saturating_duration_since(self.started)
+            .saturating_sub(self.paused.get())
+    }
+
+
+    /// Fence a caller checkpoint with cancellation before testing the active budget.
+    ///
+    /// A paused checkpoint retains every collection and iterator on this thread.
+    /// The caller must wake its checkpoint when cancellation is requested.
     fn poll(&self) -> Result<(), SearchStop> {
         if self.cancel.load(AtomicOrdering::Relaxed) {
             return Err(SearchStop::Cancelled);
         }
 
-        if self.started.elapsed() >= self.limits.max_duration {
+        let now = if let Some(checkpoint) = self.checkpoint {
+            let entered = Instant::now();
+            let reported = checkpoint();
+            let returned = Instant::now();
+            self.account_pause(reported, returned.saturating_duration_since(entered));
+            if self.cancel.load(AtomicOrdering::Relaxed) {
+                return Err(SearchStop::Cancelled);
+            }
+
+            returned
+        } else {
+            Instant::now()
+        };
+
+        if self.active_elapsed_at(now) >= self.limits.max_duration {
             return Err(SearchStop::TimeLimit);
         }
 
@@ -485,7 +534,7 @@ impl<'a, S: Copy + Eq + Hash, A: Copy> Engine<'a, S, A> {
             generated: self.stats.generated,
             states: self.nodes.len(),
             peak_frontier: self.stats.peak_frontier,
-            elapsed: self.started.elapsed(),
+            elapsed: self.active_elapsed_at(Instant::now()),
         }
     }
 
@@ -768,7 +817,41 @@ pub fn solve_with_options<P: SearchProblem>(
     options: SearchOptions,
     progress: Option<&mut dyn FnMut(SearchProgress)>,
 ) -> SearchOutcome<P::Action> {
+    solve_with_control(problem, limits, cancel, options, progress, None)
+}
+
+
+/// Run bounded search with a separate cooperative caller-owned checkpoint.
+///
+/// All ordering, reporting and result contracts match [`solve_with_options`].
+/// At the existing search checkpoints, the optional callback may wait while
+/// retaining this thread's frontier, predecessor history and successor iterator.
+/// Return only the duration intentionally suspended during that callback, or zero
+/// on its normal fast path. Each reported pause is clamped to the measured span
+/// of that callback and excluded from both `max_duration` and reported `elapsed`.
+/// Other checkpoint overhead, problem work and non-final observer work count.
+///
+/// Cancellation is checked immediately before and after the callback. The caller
+/// must arrange for its wait to wake on cancellation; the library cannot interrupt
+/// a synchronous callback. Progress observers still must return promptly. No
+/// checkpoint is called after the final observer notification.
+///
+/// # Errors
+/// Resource, cancellation, allocation and invariant outcomes match
+/// [`solve_with_options`]; no partial route is returned.
+///
+/// # Panics
+/// Problem, observer and checkpoint panics propagate without a final-report guarantee.
+pub fn solve_with_control<P: SearchProblem>(
+    problem: &P,
+    limits: SearchLimits,
+    cancel: &AtomicBool,
+    options: SearchOptions,
+    progress: Option<&mut dyn FnMut(SearchProgress)>,
+    checkpoint: Option<&dyn Fn() -> Duration>,
+) -> SearchOutcome<P::Action> {
     let mut engine = Engine::<P::State, P::Action>::new(limits, cancel);
+    engine.checkpoint = checkpoint;
     let mut progress = ProgressReporter::new(progress);
     if progress.observer.is_some() {
         progress.report(engine.stats(), false);

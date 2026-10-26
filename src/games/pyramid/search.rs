@@ -15,7 +15,7 @@
     )
 )]
 
-use std::sync::atomic::AtomicBool;
+use std::{sync::atomic::AtomicBool, time::Duration};
 
 use crate::search::{BestEffortOutcome, BestEffortProblem, SearchProblem};
 
@@ -177,7 +177,32 @@ pub fn solve_best_effort_with_cost(
     cost: PyramidCost,
     progress: Option<&mut dyn FnMut(SearchProgress)>,
 ) -> BestEffortOutcome<RecordedAction> {
-    crate::search::solve_best_effort(
+    solve_best_effort_with_cost_and_control(deal, limits, cancel, options, cost, progress, None)
+}
+
+
+/// Seek a costed full route or scored prefix with a cooperative caller checkpoint.
+///
+/// Rules, cost, replay and partial-proof contracts match
+/// [`solve_best_effort_with_cost`]. The optional checkpoint may suspend search in
+/// place and reports its intentional waiting duration. The generic engine clamps
+/// that duration to the measured callback span and excludes it from its combined
+/// deadline and statistics. Observer work remains counted. Cancellation must wake
+/// the caller's checkpoint, and is checked before and after it returns. No guest
+/// input, capture or background activity is introduced.
+///
+/// # Panics
+/// Caller observer and checkpoint panics propagate without a final-report guarantee.
+pub fn solve_best_effort_with_cost_and_control(
+    deal: &CompleteDeal,
+    limits: SearchLimits,
+    cancel: &AtomicBool,
+    options: SearchOptions,
+    cost: PyramidCost,
+    progress: Option<&mut dyn FnMut(SearchProgress)>,
+    checkpoint: Option<&dyn Fn() -> Duration>,
+) -> BestEffortOutcome<RecordedAction> {
+    crate::search::solve_best_effort_with_control(
         &PyramidGraph {
             deal,
             complement_masks: rules::complement_masks(deal),
@@ -187,6 +212,7 @@ pub fn solve_best_effort_with_cost(
         cancel,
         options,
         progress,
+        checkpoint,
     )
 }
 

@@ -1,5 +1,21 @@
 # Changelog
 
+## 0.9.0 — additive cooperative search control
+
+Add `solve_with_control`, `solve_best_effort_with_control` and Pyramid
+`solve_best_effort_with_cost_and_control`. Existing APIs retain never-paused behaviour.
+The caller-owned checkpoint retains the same frontier and reports only intentional
+suspension; each report is bounded by its measured callback span. Active elapsed time
+is shared by deadlines and statistics, including cancelled outcomes and best-effort
+fallback. Cancellation is checked before and after the callback. Ordinary observer,
+problem and callback overhead remain counted; a blocking callback must cooperate with
+cancellation. No dependency or input capability is added.
+
+Host qualification passed 296 all-feature tests with zero failures, ignored or filtered
+tests, plus default/feature checks, strict private documentation and Clippy. The native
+qmp-qemu-socket 2.9.139 consumer passed its full qualification and release build.
+Fresh guest acceptance remains application-owned.
+
 ## 0.8.105 — timing constants, 23 October 2026
 
 - Centralise QMP, TCP and search timings in feature-gated `src/parameters.rs`. Expose reusable QMP defaults while preserving caller overrides and dependency-free defaults.
