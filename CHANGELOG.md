@@ -1,5 +1,49 @@
 # Changelog
 
+## Unreleased joint RGB comparison — 30 October 2026
+
+The qualified working tree adds dependency-free
+`image_matching::packed_rgb::compare_packed_rgb(before, after, tolerance, maximum_changed_percent)`.
+It checks equal lengths and a valid percentage, ignores the high alpha byte of
+LE RGB0, and counts only same-pixel all-RGB deltas above tolerance. The old
+packed-byte API remains unchanged for quiet settling and other callers.
+
+The qualified xSAR working tree retains 0.9.1; its added comparator remains an unreleased path-dependency change.
+
+All sixteen library gates pass: default 14 tests, seven individual feature
+checks, all-feature check, strict private rustdoc, Clippy, 303 full tests,
+release and two new focused Miri checks. The real consumer 2.9.168 passes
+1,669 full tests and aligned locked check/release. No library publication,
+Git promotion or installation occurred. Both CPU configurations are recorded
+in [the consumer verification](../qmp-qemu-socket/docs/Verification-2.9.168.md).
+
+
+
+## 0.9.1 — 29 October 2026
+
+## 0.9.1 — safe independent packed-byte comparison
+
+The image_matching feature exports compare_packed_bytes(before: &[u32],
+after: &[u32], tolerance: u8). Equal-length words are unpacked with to_le_bytes;
+each of the four byte positions is independent and changes only when its
+absolute difference is strictly greater than tolerance. Absolute sums include
+every delta, with maxima and changed counts per position. The operation uses
+a safe plain loop without allocation, unsafe code or an internal timer.
+
+Length mismatch and conservative accumulator-size bounds return typed errors;
+empty slices produce zero statistics. The caller owns RGB/alpha interpretation.
+The existing count_rgb_changes API and its different threshold semantics are
+unchanged. The packed-byte-comparison example times one whole 1,519-word call
+only, with preparation and output outside the timer. One observed 7.314 us is
+not a performance guarantee.
+
+The default dependency-free checks, seven individual feature checks, all-feature
+check/tests, strict private rustdoc, Clippy, release and two focused Miri tests
+pass: 299 tests in the full scope, 14 default tests. qmp-qemu-socket 2.9.167 is
+the real qualified consumer. No registry publication or Git promotion occurred.
+
+## Earlier releases
+
 ## 0.9.0 — additive cooperative search control
 
 Add `solve_with_control`, `solve_best_effort_with_control` and Pyramid

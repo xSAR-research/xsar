@@ -20,6 +20,14 @@ pub use black_run::find_black_run_bottom_up;
 pub mod comparison;
 
 
+/// Allocation-free measurements of independent bytes in equally sized packed arrays.
+pub mod packed_comparison;
+
+
+/// Joint same-pixel RGB comparison with exact percentage bounds and prefix counts.
+pub mod packed_rgb;
+
+
 /// Supported four-byte, eight-bit-per-channel pixel ordering.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum PixelFormat {

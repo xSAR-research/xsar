@@ -1,3 +1,80 @@
+# Milestone Tracker & Baseline Receipt — xsar
+
+## Active 168 consumer receipt — package 0.9.1
+
+Baseline_HEAD_SHA: d20dca8ad2320dcbbf869e22b35a2583317d4569
+Parent: e50f7b3222fbd803d9eeecd8a2a37ba6fec856ca
+
+Use the exact [consumer handoff](../../qmp-qemu-socket/docs/handoff.md)
+Destination Sentinel for both qualified dirty trees. It seals 920 paired
+inputs including all 56 library inputs, four repository histories/indices,
+complete porcelain, documents and protected executable. A path is not a Git pin.
+
+The qualified working tree adds dependency-free
+`image_matching::packed_rgb::compare_packed_rgb(before, after, tolerance, maximum_changed_percent)`.
+It checks equal lengths and a valid percentage, ignores the high alpha byte of
+LE RGB0, and counts only same-pixel all-RGB deltas above tolerance. The old
+packed-byte API remains unchanged for quiet settling and other callers.
+
+The qualified xSAR working tree retains 0.9.1; its added comparator remains an unreleased path-dependency change.
+
+All sixteen library gates pass: default 14 tests, seven individual feature
+checks, all-feature check, strict private rustdoc, Clippy, 303 full tests,
+release and two new focused Miri checks. The real consumer 2.9.168 passes
+1,669 full tests and aligned locked check/release. No library publication,
+Git promotion or installation occurred. Both CPU configurations are recorded
+in [the consumer verification](../../qmp-qemu-socket/docs/Verification-2.9.168.md).
+
+## Retained 0.9.1 receipt — historical
+
+## Active paired 0.9.1 receipt — 29 October 2026
+
+Use the current exact Destination Sentinel in
+[the qualified consumer handoff](../../qmp-qemu-socket/docs/handoff.md).
+It binds both dirty working trees, all four repository histories/indices,
+complete porcelain, the qualified source and protected consumer. A match
+retains these host checks as PASSED (Cached). Do not rerun the superseded
+pre-promotion sentinel preserved in the historical section below.
+
+| Field | Current receipt |
+| --- | --- |
+| Package | xSAR 0.9.1; independent patch approved in m02281 |
+| Baseline_HEAD_SHA | d20dca8ad2320dcbbf869e22b35a2583317d4569 |
+| Baseline parent | e50f7b3222fbd803d9eeecd8a2a37ba6fec856ca |
+| Porcelain and index | Exact destination-state.json; original index unchanged |
+| Source scope | Safe packed-byte comparator, registration, example and own version/docs |
+| Source inputs | 54 xSAR inputs within 905 paired sealed inputs |
+| Verification | 16 gates pass: defaults, seven features, all features, strict docs, Clippy, 299 full tests, release and two new Miri tests |
+| Default tests | 14 pass; no default dependency added |
+| Consumer | qmp-qemu-socket 2.9.167 passes 1,660 full tests and aligned locked check/release |
+| Alignment | xSAR manifest/lock first, then consumer own manifest/lock and xSAR lock entry |
+| Promotion | No staging, commit, push, registry publication or install |
+
+## 0.9.1 — safe independent packed-byte comparison
+
+The image_matching feature exports compare_packed_bytes(before: &[u32],
+after: &[u32], tolerance: u8). Equal-length words are unpacked with to_le_bytes;
+each of the four byte positions is independent and changes only when its
+absolute difference is strictly greater than tolerance. Absolute sums include
+every delta, with maxima and changed counts per position. The operation uses
+a safe plain loop without allocation, unsafe code or an internal timer.
+
+Length mismatch and conservative accumulator-size bounds return typed errors;
+empty slices produce zero statistics. The caller owns RGB/alpha interpretation.
+The existing count_rgb_changes API and its different threshold semantics are
+unchanged. The packed-byte-comparison example times one whole 1,519-word call
+only, with preparation and output outside the timer. One observed 7.314 us is
+not a performance guarantee.
+
+The default dependency-free checks, seven individual feature checks, all-feature
+check/tests, strict private rustdoc, Clippy, release and two focused Miri tests
+pass: 299 tests in the full scope, 14 default tests. qmp-qemu-socket 2.9.167 is
+the real qualified consumer. No registry publication or Git promotion occurred.
+
+## Historical 0.9.0 receipt — superseded, do not execute its sentinel
+
+The following is preserved historical evidence, not the current gate contract.
+
 # Milestone Tracker & Baseline Receipt — `xsar`
 
 This file (`docs/milestones.md`) is the authoritative repository-local state receipt for the `Session-Start MCP, Memory & Baseline Gate` (`~/.codex/AGENTS.md`) and `xsar/AGENTS.md`.
@@ -66,3 +143,4 @@ Run this check from the `xsar` repository root via `ctx_execute` at session star
   printf "State: xsar=%s (dirty=%s, baseline 9..11), consumer qmp-qemu-socket=%s\n" "$xsar_ver" "$xsar_dirty" "$app_ver"
   printf "HANDOFF VERIFIED\n"
 }
+
