@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.10.0
+
+- Add independently gated `games::freecell` checked stacks, physical column order, exact 52-card initial-deal validation and bounded provenance.
+- Add `freecell_json` strict object-only schema 1, 65,536-byte codec and Unix no-overwrite writer.
+- Share private filesystem publication with Pyramid while retaining its public signatures, errors, status values and no-clobber behaviour.
+
+Defaults remain dependency-free. Twenty source gates/311 full tests passed; separate approved version alignment and both consumers passed. Native Free Cell acceptance is controller-owned and pending. Existing unreleased 0.9.1 work below is retained with its original evidence.
+
 ## Unreleased joint RGB comparison — 30 October 2026
 
 The qualified working tree adds dependency-free

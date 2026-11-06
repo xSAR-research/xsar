@@ -1,6 +1,14 @@
 # Milestone Tracker & Baseline Receipt — xsar
 
-## Active 168 consumer receipt — package 0.9.1
+## Active 0.10.0 — Free Cell model and JSON
+
+Baseline_HEAD_SHA: `c4a9b839ece3668b8d46ca00676ae05c34a97943`. Parent_HEAD_SHA: `d20dca8ad2320dcbbf869e22b35a2583317d4569`. Controller consumer 3.0.0; console 0.8.5 retains its own version and now resolves xSAR 0.10.0.
+
+Twenty original source gates/311 full tests, independently gated model/JSON tests and existing Pyramid publication regression tests passed. Approved five-file version alignment preserves 982 of 987 inputs; locked library/app/console checks, console tests and final controller release/help passed. Original source receipts and the failed stale-console-lock attempt remain distinct historical records.
+
+No search implementation, new RGB/Miri evidence, guest/GUI action or Git publication is claimed. Controller native RECON acceptance remains pending. [Paired verification](https://github.com/xSAR-research/qmp-qemu-socket/blob/5fa150a610bbbd2b6718bf87b6730c0b852b41e2/docs/Verification-3.0.0.md).
+
+## Retained 168 consumer receipt — package 0.9.1
 
 Baseline_HEAD_SHA: d20dca8ad2320dcbbf869e22b35a2583317d4569
 Parent: e50f7b3222fbd803d9eeecd8a2a37ba6fec856ca
@@ -27,7 +35,7 @@ in [the consumer verification](../../qmp-qemu-socket/docs/Verification-2.9.168.m
 
 ## Retained 0.9.1 receipt — historical
 
-## Active paired 0.9.1 receipt — 29 October 2026
+## Retained paired 0.9.1 receipt — 29 October 2026
 
 Use the current exact Destination Sentinel in
 [the qualified consumer handoff](../../qmp-qemu-socket/docs/handoff.md).

@@ -253,3 +253,10 @@ mod tests {
         assert_eq!(mesh_packet.node_assigned_identifier, 42);
     }
 }
+
+#[cfg(any(feature = "pyramid_json", feature = "freecell_json"))]
+mod json_publication;
+
+/// Bounded strict codec for complete FreeCell initial deals.
+#[cfg(feature = "freecell_json")]
+pub mod freecell_json;

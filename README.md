@@ -1,4 +1,10 @@
-# xSAR Core Architecture — 0.9.1 host verified
+# xSAR Core Architecture — 0.10.0 host verified
+
+## 0.10.0 — checked Free Cell interchange
+
+Adds optional `freecell` checked physical stacks and immutable complete initial deals, plus `freecell_json` strict bounded schema-1 interchange and no-overwrite publication. Default features remain dependency-free. Shared private publication preserves the public Pyramid API and its error/status semantics; xSAR provides model/codec/publication APIs, not a solver or live acquisition authority.
+
+Retained source qualification: 20 gates, 311 full tests; model-only 3, FreeCell-JSON-only 34, Pyramid-JSON-only 122 and default 14 tests. Final version alignment passed the library and both consumer locked checks, console tests and controller release/help. Existing 0.9.1 RGB/Miri evidence remains historical; no new Miri or native guest proof is claimed. See [release receipt](docs/milestones.md).
 
 ## Qualified joint RGB working tree — package 0.9.1
 
@@ -171,6 +177,8 @@ Copyright 2026 xSAR Research.
 | `pyramid` | `games::pyramid`, also `games::cards` | Enables `cards`; no external dependencies |
 | `pyramid_rules` | `games::pyramid::{planning,rules,replay}` | Enables `pyramid` and existing optional `thiserror`; no JSON, capture or input dependencies |
 | `pyramid_search` | `games::pyramid::search` and the rules modules | Enables `pyramid_rules` and `search`; no JSON, capture or input dependencies |
+| `freecell` | `games::freecell`, also `games::cards` | Checked physical models; optional `thiserror`; no JSON/capture/input |
+| `freecell_json` | `freecell_json`, also the Free Cell model | Optional `serde`/`serde_json`; Unix writer, portable codec |
 | `pyramid_json` | `pyramid_json`, also both model modules | Optional `serde` with std/derive and existing `serde_json`; no QMP/image/GUI dependencies |
 | `pixel_format` | `pixel_format` | Portable byte-layout conversion; no external dependencies |
 | `tcp_capture` | `tcp`, also `pixel_format` | Bounded standard-library TCP capture and shared protocol; no QMP/PNG/GUI dependencies |

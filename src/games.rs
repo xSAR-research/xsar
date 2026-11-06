@@ -7,6 +7,10 @@
 /// Standard single-deck rank and suit identities; available with `cards`.
 pub mod cards;
 
+/// Checked FreeCell physical storage and immutable complete initial deals.
+#[cfg(feature = "freecell")]
+pub mod freecell;
+
 
 /// Validated complete original Pyramid arrangements; available with `pyramid`.
 #[cfg(feature = "pyramid")]
