@@ -183,8 +183,9 @@ impl std::error::Error for SearchStop {}
 pub enum SearchOutcome<A> {
     /// A goal-reaching path under the problem's declared transition rules.
     ///
-    /// Dijkstra and weight-one A* establish minimum declared cost under the problem
-    /// contract. A larger A* weight does not establish a minimum-cost route.
+    /// Exact Dijkstra and weight-one A* establish minimum declared cost under the
+    /// admissible problem contract. Larger weights and the explicitly guided
+    /// unlimited entry point do not establish a minimum-cost route.
     Solved {
         /// Ordered actions from the initial state through the reached goal.
         actions: Box<[A]>,
@@ -430,7 +431,7 @@ struct Engine<'a, S, A> {
     /// Lowest objective cost and then logical depth for each distinct rule state.
     best: HashMap<S, PathLabel>,
     /// Caller-supplied resource limits, unchanged throughout the invocation.
-    limits: SearchLimits,
+    limits: Option<SearchLimits>,
     /// Caller-owned flag, observed before work and between successors.
     cancel: &'a AtomicBool,
     /// Wall-clock origin shared by guided and unpruned phases.
@@ -451,7 +452,7 @@ impl<'a, S: Copy + Eq + Hash, A: Copy> Engine<'a, S, A> {
             nodes: Vec::new(),
             frontier: BinaryHeap::new(),
             best: HashMap::new(),
-            limits,
+            limits: Some(limits),
             cancel,
             started: Instant::now(),
             checkpoint: None,
@@ -508,7 +509,10 @@ impl<'a, S: Copy + Eq + Hash, A: Copy> Engine<'a, S, A> {
             Instant::now()
         };
 
-        if self.active_elapsed_at(now) >= self.limits.max_duration {
+        if self
+            .limits
+            .is_some_and(|limits| self.active_elapsed_at(now) >= limits.max_duration)
+        {
             return Err(SearchStop::TimeLimit);
         }
 
@@ -555,11 +559,25 @@ impl<'a, S: Copy + Eq + Hash, A: Copy> Engine<'a, S, A> {
     /// after a reservation; the memory estimate is not a hard RSS or peak guarantee.
     fn reserve_insert(&mut self, new_state: bool) -> Result<(), SearchStop> {
         self.poll()?;
-        if self.nodes.len() >= self.limits.max_states {
+        let Some(limits) = self.limits else {
+            self.nodes
+                .try_reserve(1)
+                .map_err(|_| SearchStop::AllocationFailure)?;
+            self.frontier
+                .try_reserve(1)
+                .map_err(|_| SearchStop::AllocationFailure)?;
+            if new_state {
+                self.best
+                    .try_reserve(1)
+                    .map_err(|_| SearchStop::AllocationFailure)?;
+            }
+            return self.poll();
+        };
+        if self.nodes.len() >= limits.max_states {
             return Err(SearchStop::StateLimit);
         }
 
-        let record_cap = self.limits.max_memory_bytes / memory_bytes_per_record::<S, A>();
+        let record_cap = limits.max_memory_bytes / memory_bytes_per_record::<S, A>();
         if self.nodes.len() >= record_cap {
             return Err(SearchStop::MemoryLimit);
         }
@@ -579,7 +597,7 @@ impl<'a, S: Copy + Eq + Hash, A: Copy> Engine<'a, S, A> {
         };
 
         if estimated_bytes::<S, A>(node_target, frontier_target, map_estimate)
-            > self.limits.max_memory_bytes
+            > limits.max_memory_bytes
         {
             return Err(SearchStop::MemoryLimit);
         }
@@ -606,7 +624,7 @@ impl<'a, S: Copy + Eq + Hash, A: Copy> Engine<'a, S, A> {
             self.nodes.capacity(),
             self.frontier.capacity(),
             self.best.capacity(),
-        ) > self.limits.max_memory_bytes
+        ) > limits.max_memory_bytes
         {
             return Err(SearchStop::MemoryLimit);
         }
@@ -665,7 +683,10 @@ impl<'a, S: Copy + Eq + Hash, A: Copy> Engine<'a, S, A> {
             self.best.capacity(),
         )
         .saturating_add(extra_action_capacity.saturating_mul(size_of::<A>()));
-        if allocated_bytes > self.limits.max_memory_bytes {
+        if self
+            .limits
+            .is_some_and(|limits| allocated_bytes > limits.max_memory_bytes)
+        {
             return Err(SearchStop::MemoryLimit);
         }
 
@@ -857,7 +878,7 @@ pub fn solve_with_control<P: SearchProblem>(
         progress.report(engine.stats(), false);
     }
 
-    let outcome = run(problem, &mut engine, options, &mut progress);
+    let outcome = run(problem, &mut engine, options, &mut progress, None);
     let stats = match &outcome {
         SearchOutcome::Solved { stats, .. }
         | SearchOutcome::Unsolvable { stats }
@@ -868,12 +889,60 @@ pub fn solve_with_control<P: SearchProblem>(
 }
 
 
+/// Find a complete route using ordering guidance without configured resource caps.
+///
+/// Orders by `g + guidance`, returns the first reached goal, and makes no minimum
+/// cost claim. Neither the problem's admissible heuristic nor its impossibility
+/// proof is invoked. Guidance must be deterministic, nonnegative and zero at goals.
+/// Existing bounded entry points and their contracts are unchanged. Checked
+/// growth and fallible reservations remain; operating-system termination cannot
+/// be recovered. Cancellation, progress and suspension follow [`solve_with_control`].
+/// Guidance must return promptly; a running callback cannot be interrupted.
+///
+/// # Errors
+/// Allocation, arithmetic/invariant failure or cancellation returns `Stopped`
+/// without a partial route. Exhaustion alone returns `Unsolvable`.
+///
+/// # Panics
+/// Caller problem, guidance, observer and checkpoint panics propagate.
+pub fn solve_guided_unlimited_with_control<P: SearchProblem>(
+    problem: &P,
+    cancel: &AtomicBool,
+    guidance: &dyn Fn(P::State) -> u32,
+    progress: Option<&mut dyn FnMut(SearchProgress)>,
+    checkpoint: Option<&dyn Fn() -> Duration>,
+) -> SearchOutcome<P::Action> {
+    let mut engine = Engine::<P::State, P::Action>::new(SearchLimits::default(), cancel);
+    engine.limits = None;
+    engine.checkpoint = checkpoint;
+    let mut reporter = ProgressReporter::new(progress);
+    if reporter.observer.is_some() {
+        reporter.report(engine.stats(), false);
+    }
+    let outcome = run(
+        problem,
+        &mut engine,
+        SearchOptions::default(),
+        &mut reporter,
+        Some(guidance),
+    );
+    let stats = match &outcome {
+        SearchOutcome::Solved { stats, .. }
+        | SearchOutcome::Unsolvable { stats }
+        | SearchOutcome::Stopped { stats, .. } => *stats,
+    };
+    reporter.report(stats, true);
+    outcome
+}
+
+
 /// Run one exact or weighted search, leaving final notification to the caller.
 fn run<P: SearchProblem>(
     problem: &P,
     engine: &mut Engine<'_, P::State, P::Action>,
     options: SearchOptions,
     progress: &mut ProgressReporter<'_>,
+    guidance: Option<&dyn Fn(P::State) -> u32>,
 ) -> SearchOutcome<P::Action> {
     if let Err(reason) = engine.poll_with_progress(progress) {
         return engine.stopped(reason);
@@ -902,7 +971,7 @@ fn run<P: SearchProblem>(
         };
     }
 
-    let initial_is_impossible = use_astar && problem.impossible(initial);
+    let initial_is_impossible = guidance.is_none() && use_astar && problem.impossible(initial);
     if let Err(reason) = engine.poll_with_progress(progress) {
         return engine.stopped(reason);
     }
@@ -913,7 +982,9 @@ fn run<P: SearchProblem>(
         };
     }
 
-    let heuristic = if use_astar {
+    let heuristic = if let Some(guide) = guidance {
+        guide(initial)
+    } else if use_astar {
         problem.heuristic(initial)
     } else {
         0
@@ -964,11 +1035,17 @@ fn run<P: SearchProblem>(
             };
         }
 
-        if engine.stats.expanded >= engine.limits.max_expansions {
+        if engine
+            .limits
+            .is_some_and(|limits| engine.stats.expanded >= limits.max_expansions)
+        {
             return engine.stopped(SearchStop::ExpansionLimit);
         }
 
-        engine.stats.expanded += 1;
+        engine.stats.expanded = match engine.stats.expanded.checked_add(1) {
+            Some(count) => count,
+            None => return engine.stopped(SearchStop::InternalInvariant),
+        };
         let mut successors = problem.successors(node.state);
         loop {
             if let Err(reason) = engine.poll_with_progress(progress) {
@@ -983,7 +1060,7 @@ fn run<P: SearchProblem>(
             }
 
             engine.stats.generated = engine.stats.generated.saturating_add(1);
-            if use_astar && problem.impossible(next) {
+            if guidance.is_none() && use_astar && problem.impossible(next) {
                 continue;
             }
 
@@ -1002,7 +1079,9 @@ fn run<P: SearchProblem>(
                 continue;
             }
 
-            let heuristic = if use_astar {
+            let heuristic = if let Some(guide) = guidance {
+                guide(next)
+            } else if use_astar {
                 problem.heuristic(next)
             } else {
                 0

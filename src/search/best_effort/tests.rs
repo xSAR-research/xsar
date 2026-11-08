@@ -429,7 +429,7 @@ fn deadline_retains_checked_prefix_but_fatal_errors_do_not() {
     )
     .unwrap();
     engine.started = Instant::now()
-        .checked_sub(engine.limits.max_duration)
+        .checked_sub(engine.limits.expect("bounded test engine").max_duration)
         .unwrap();
     assert_eq!(engine.poll(), Err(SearchStop::TimeLimit));
     assert!(

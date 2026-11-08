@@ -3,6 +3,197 @@
 use super::*;
 
 
+/// Guided ordering may select a longer legal route without invoking exact proofs.
+#[test]
+fn freecell_310_guided_unlimited_preserves_exact_search_and_has_no_hidden_caps() {
+    /// The guided entry must never consult these admissibility-only callbacks.
+    struct Guided(Graph<'static>);
+    impl SearchProblem for Guided {
+        type State = u8;
+        type Action = (u8, u32);
+        type Successors = std::vec::IntoIter<(Self::Action, Self::State)>;
+        /// Borrow the same immutable graph origin.
+        fn initial(&self) -> u8 {
+            self.0.initial()
+        }
+        /// Test the declared graph endpoint.
+        fn is_goal(&self, s: u8) -> bool {
+            self.0.is_goal(s)
+        }
+        /// Retain the full graph, without heuristic pruning.
+        fn successors(&self, s: u8) -> Self::Successors {
+            self.0.successors(s)
+        }
+        /// Use the explicit nonnegative edge cost.
+        fn action_cost(&self, s: u8, a: Self::Action) -> u32 {
+            self.0.action_cost(s, a)
+        }
+        /// Calling this exact-search hook from guided search violates the API.
+        fn heuristic(&self, _: u8) -> u32 {
+            panic!("guided search called admissible heuristic")
+        }
+        /// Calling this proof hook from guided search violates the API.
+        fn impossible(&self, _: u8) -> bool {
+            panic!("guided search called impossibility proof")
+        }
+    }
+    let graph = Graph {
+        edges: &[(0, 1, 1), (1, 4, 1), (0, 2, 1), (2, 3, 1), (3, 4, 1)],
+        goal: Some(4),
+        scores: &[],
+    };
+    let cancel = AtomicBool::new(false);
+    let SearchOutcome::Solved { actions, .. } = solve(
+        &graph,
+        SearchLimits::default(),
+        &cancel,
+        SearchMethod::Dijkstra,
+    ) else {
+        panic!("exact route");
+    };
+    assert_eq!(&*actions, &[(1, 1), (4, 1)]);
+    let guide = |s| if s == 1 { 100 } else { 0 };
+    let guided = Guided(graph);
+    let mut notifications = Vec::new();
+    let SearchOutcome::Solved { actions, stats } = solve_guided_unlimited_with_control(
+        &guided,
+        &cancel,
+        &guide,
+        Some(&mut |p| notifications.push(p)),
+        None,
+    ) else {
+        panic!("guided route");
+    };
+    assert_eq!(&*actions, &[(2, 1), (3, 1), (4, 1)]);
+    assert!(!notifications.first().unwrap().finished);
+    assert!(notifications.last().unwrap().finished);
+    assert_eq!(notifications.iter().filter(|p| p.finished).count(), 1);
+    assert_eq!(notifications.last().unwrap().stats, stats);
+    let tiny = SearchLimits {
+        max_states: 0,
+        ..SearchLimits::default()
+    };
+    assert!(matches!(
+        solve(&guided.0, tiny, &cancel, SearchMethod::Dijkstra),
+        SearchOutcome::Stopped {
+            reason: SearchStop::StateLimit,
+            ..
+        }
+    ));
+    // Advance past the old default time/expansion budgets without doing that work.
+    let limits = SearchLimits::default();
+    let mut engine = Engine::new(limits, &cancel);
+    engine.limits = None;
+    engine.started = Instant::now()
+        .checked_sub(limits.max_duration + Duration::from_secs(1))
+        .unwrap();
+    engine.stats.expanded = limits.max_expansions + 1;
+    assert!(matches!(
+        run(
+            &guided,
+            &mut engine,
+            SearchOptions::default(),
+            &mut ProgressReporter::new(None),
+            Some(&guide)
+        ),
+        SearchOutcome::Solved { .. }
+    ));
+    let cancel = AtomicBool::new(false);
+    let stopped = solve_guided_unlimited_with_control(
+        &guided,
+        &cancel,
+        &|_| {
+            cancel.store(true, AtomicOrdering::Release);
+            0
+        },
+        None,
+        None,
+    );
+    assert!(matches!(
+        stopped,
+        SearchOutcome::Stopped {
+            reason: SearchStop::Cancelled,
+            ..
+        }
+    ));
+}
+
+
+/// Reopening an equal canonical key must preserve actual physical parent actions.
+#[test]
+fn freecell_310_guided_reopen_keeps_physical_arena_history() {
+    /// Equality deliberately ignores the physical representative, as Free Cell does.
+    #[derive(Clone, Copy, Debug)]
+    struct Physical {
+        key: u8,
+        place: u8,
+    }
+    impl PartialEq for Physical {
+        /// Only the canonical identity defines equivalent futures.
+        fn eq(&self, b: &Self) -> bool {
+            self.key == b.key
+        }
+    }
+    impl Eq for Physical {}
+    impl std::hash::Hash for Physical {
+        /// Match canonical equality even when physical representatives differ.
+        fn hash<H: std::hash::Hasher>(&self, h: &mut H) {
+            self.key.hash(h);
+        }
+    }
+    /// Finite graph whose canonical key is reached through two physical histories.
+    struct PhysicalGraph;
+    impl SearchProblem for PhysicalGraph {
+        type State = Physical;
+        type Action = (u8, u8, u32);
+        type Successors = std::vec::IntoIter<(Self::Action, Self::State)>;
+        /// Start at the original physical origin.
+        fn initial(&self) -> Physical {
+            Physical { key: 0, place: 0 }
+        }
+        /// The final key is independent of physical placement.
+        fn is_goal(&self, s: Physical) -> bool {
+            s.key == 3
+        }
+        /// Record each transition from the actual parent representative.
+        fn successors(&self, s: Physical) -> Self::Successors {
+            let edges: &[(u8, u8, u32)] = match s.key {
+                0 => &[(1, 7, 4), (2, 9, 1)],
+                2 => &[(1, 3, 1)],
+                1 => &[(3, 4, 20)],
+                _ => &[],
+            };
+            edges
+                .iter()
+                .map(|&(key, place, cost)| ((s.place, place, cost), Physical { key, place }))
+                .collect::<Vec<_>>()
+                .into_iter()
+        }
+        /// Preserve independently declared route costs.
+        fn action_cost(&self, _: Physical, a: Self::Action) -> u32 {
+            a.2
+        }
+    }
+    let outcome = solve_guided_unlimited_with_control(
+        &PhysicalGraph,
+        &AtomicBool::new(false),
+        &|s| if s.key == 2 { 10 } else { 0 },
+        None,
+        None,
+    );
+    let SearchOutcome::Solved { actions, .. } = outcome else {
+        panic!("reopened route");
+    };
+    assert_eq!(&*actions, &[(0, 9, 1), (9, 3, 1), (3, 4, 20)]);
+    let mut physical = 0;
+    for &(from, to, _) in &actions {
+        assert_eq!(from, physical);
+        physical = to;
+    }
+    assert_eq!(physical, 4);
+}
+
+
 /// Complete directed graph with explicit costs and independently labelled scores.
 struct Graph<'a> {
     /// Stable edges, each declaring origin, destination and nonnegative cost.

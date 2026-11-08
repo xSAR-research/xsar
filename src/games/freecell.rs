@@ -5,6 +5,18 @@
 
 use super::cards::{Card, Suit};
 
+/// Pure exposed-card rules and exact physical search positions.
+#[cfg(feature = "freecell_rules")]
+pub mod rules;
+
+/// Independent physical route verification, without guest input.
+#[cfg(feature = "freecell_rules")]
+pub mod replay;
+
+/// Complete guided offline calculation, without configured search cutoffs.
+#[cfg(feature = "freecell_search")]
+pub mod search;
+
 /// Hard per-cascade capacity, including later noninitial positions.
 pub const CASCADE_CAPACITY: usize = 20;
 /// Original column lengths, from left to right.

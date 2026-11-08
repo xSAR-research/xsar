@@ -223,7 +223,7 @@ fn finite_deadline_and_statistics_share_active_time() {
     assert_eq!(engine.poll(), Ok(()));
     let resumed_stats = engine.stats();
     assert!(resumed_stats.elapsed >= Duration::from_secs(60));
-    assert!(resumed_stats.elapsed < engine.limits.max_duration);
+    assert!(resumed_stats.elapsed < engine.limits.expect("bounded test engine").max_duration);
     engine.paused.set(Duration::ZERO);
     assert_eq!(engine.poll(), Err(SearchStop::TimeLimit));
     assert!(engine.stats().elapsed >= Duration::from_secs(7_200));

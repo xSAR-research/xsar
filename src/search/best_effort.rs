@@ -171,7 +171,11 @@ fn consider<P: BestEffortProblem>(
         goal,
         label,
     };
-    engine.limits.max_memory_bytes = memory_allowance.saturating_sub(bytes);
+    engine
+        .limits
+        .as_mut()
+        .ok_or(SearchStop::InternalInvariant)?
+        .max_memory_bytes = memory_allowance.saturating_sub(bytes);
     Ok(())
 }
 
@@ -235,7 +239,13 @@ fn phase<P: BestEffortProblem>(
             poll(engine, previous, progress)?;
             return Ok(Some(actions));
         }
-        if engine.stats.expanded >= engine.limits.max_expansions {
+        if engine.stats.expanded
+            >= engine
+                .limits
+                .as_ref()
+                .ok_or(SearchStop::InternalInvariant)?
+                .max_expansions
+        {
             return Err(SearchStop::ExpansionLimit);
         }
         engine.stats.expanded += 1;

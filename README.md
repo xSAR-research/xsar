@@ -1,4 +1,20 @@
-# xSAR Core Architecture — 0.10.0 host verified
+# xSAR Core Architecture — 0.11.1 host verified
+
+## 0.11.1 — guarded neutral QMP drag
+
+Adds `QmpClient::drag`: checked source/destination mapping, source-movement acknowledgement, guard checks around button/held-movement/release stages and release before waiting for gesture replies. Distinct pixels mapping to the same QMP point refuse before input. Every error after down may have been sent performs existing old-stream/fresh-stream release-only recovery and invalidates the original client; it never repeats down or destination movement. Release may itself affect the guest; no rollback or semantic completion is claimed. Application policy owns evidence, STOP and effect verification.
+
+All 38 paired source commands passed, including the existing optional-feature/default matrix and six library/controller gates: **323 library, 1,789 controller, 80 console** full tests, zero failed/ignored/filtered. Four new local QMP drag tests cover mapped aliases, source ACK ordering, release-before-ACK collection and release-only cancellation/error recovery. Seven aligned commands passed for app3.1.2/xSAR0.11.1. Defaults, existing transport methods, search/rules and dependency versions remain unchanged. No new Miri or fresh guest acceptance is claimed. See [paired verification](../qmp-qemu-socket/docs/Verification-3.1.2.md).
+
+## 0.11.0 — complete offline Free Cell routes
+
+Adds optional `freecell_rules` and `freecell_search` for complete offline routes with irreversible foundations, exact canonical equality, cached column hashes, recorded Horne transfers and independent physical replay. Adds `search::solve_guided_unlimited_with_control` without changing existing bounded exact/best-effort signatures or policies. Its ordering guidance makes no minimum-cost claim. Default features remain dependency-free; no capture/input authority or new dependency is introduced.
+
+Qualification passed 38 source commands: xSAR dependency-free defaults and eleven isolated optional features, both owning six-gate suites, and the console consumer check/tests. Full tests passed: xSAR 319, controller 1,761, console 80, with zero failures or ignored tests. The unchanged library's 30 passing rows are retained from the first source attempt; the app's narrow Clippy correction is followed by fresh six-gate qualification. The original failure and preimages remain preserved.
+
+Approved five-file version alignment to app 3.1.0/xSAR 0.11.0 passed library/app/console locked checks, console tests, both release builds and direct help. All 1,009 compiler inputs are sealed; 1,004 are identical across version alignment. Console package version remains 0.8.5. No new Miri or fresh guest/GUI acceptance is claimed.
+
+See [current milestone receipt](docs/milestones.md).
 
 ## 0.10.0 — checked Free Cell interchange
 
@@ -179,6 +195,8 @@ Copyright 2026 xSAR Research.
 | `pyramid_search` | `games::pyramid::search` and the rules modules | Enables `pyramid_rules` and `search`; no JSON, capture or input dependencies |
 | `freecell` | `games::freecell`, also `games::cards` | Checked physical models; optional `thiserror`; no JSON/capture/input |
 | `freecell_json` | `freecell_json`, also the Free Cell model | Optional `serde`/`serde_json`; Unix writer, portable codec |
+| `freecell_rules` | `games::freecell::{rules,replay}` | Enables `freecell`; checked physical single-card rules and independent replay |
+| `freecell_search` | `games::freecell::search` | Enables `freecell_rules` and `search`; complete guided search without configured cutoffs |
 | `pyramid_json` | `pyramid_json`, also both model modules | Optional `serde` with std/derive and existing `serde_json`; no QMP/image/GUI dependencies |
 | `pixel_format` | `pixel_format` | Portable byte-layout conversion; no external dependencies |
 | `tcp_capture` | `tcp`, also `pixel_format` | Bounded standard-library TCP capture and shared protocol; no QMP/PNG/GUI dependencies |

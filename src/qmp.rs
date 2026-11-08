@@ -327,6 +327,74 @@ impl QmpClient {
     }
 
 
+    /// Drag between checked guest pixels without releasing at the source.
+    ///
+    /// The source movement is acknowledged before pressing. Down, held movement
+    /// and up are sent before collecting their replies, so delayed ACKs cannot
+    /// leave the button held. The predicate must return promptly; false revokes
+    /// further movement. Any failure after a down attempt performs release-only
+    /// recovery and invalidates this connection, never repeating the transfer.
+    /// A safety release may change the guest: interruption does not imply rollback.
+    /// Uses the configured mouse hold and pointer settling intervals; blocks on I/O.
+    pub fn drag<F>(
+        &mut self,
+        source: PixelPoint,
+        destination: PixelPoint,
+        guest_width: u32,
+        guest_height: u32,
+        mut permitted: F,
+    ) -> Result<(), QmpError>
+    where
+        F: FnMut() -> bool,
+    {
+        let movement = |point: PixelPoint| -> Result<Value, QmpError> {
+            let x = u32::try_from(point.x)
+                .map_err(|_| QmpError::Protocol("negative drag X coordinate".into()))?;
+            let y = u32::try_from(point.y)
+                .map_err(|_| QmpError::Protocol("negative drag Y coordinate".into()))?;
+            Ok(json!({"events":[
+                {"type":"abs","data":{"axis":"x","value":pixel_to_qmp_axis(x, guest_width)?}},
+                {"type":"abs","data":{"axis":"y","value":pixel_to_qmp_axis(y, guest_height)?}}
+            ]}))
+        };
+        let from = movement(source)?;
+        let to = movement(destination)?;
+        if from == to {
+            return Err(QmpError::Protocol("drag endpoints must differ".into()));
+        }
+        let interrupted = || QmpError::Protocol("drag authority interrupted".into());
+        if !permitted() {
+            return Err(interrupted());
+        }
+        self.execute("input-send-event", Some(from))?;
+        thread::sleep(self.config.pointer_settle_delay);
+        if !permitted() {
+            return Err(interrupted());
+        }
+        let up = json!({"events":[{"type":"btn","data":{"button":"left","down":false}}]});
+        let action = (|| {
+            let down = self.send_request(
+                "input-send-event",
+                Some(json!({"events":[
+                    {"type":"btn","data":{"button":"left","down":true}}
+                ]})),
+            )?;
+            thread::sleep(self.config.mouse_hold);
+            if !permitted() {
+                return Err(interrupted());
+            }
+            let moved = self.send_request("input-send-event", Some(to))?;
+            thread::sleep(self.config.pointer_settle_delay);
+            if !permitted() {
+                return Err(interrupted());
+            }
+            let released = self.send_request("input-send-event", Some(up.clone()))?;
+            self.await_responses(&[down, moved, released]).map(|_| ())
+        })();
+        action.map_err(|error| self.recover_release(up, error))
+    }
+
+
     /// Converts a guest pixel position and sends one absolute left click
     /// using the caller-selected button-down duration.
     pub fn click_with_hold(
@@ -618,6 +686,9 @@ mod tests {
     };
 
     use super::*;
+
+
+    mod drag_tests;
 
 
     /// Process-local suffix used to keep concurrent mock socket paths distinct.
