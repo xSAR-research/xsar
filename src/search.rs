@@ -23,6 +23,7 @@
 
 use crate::parameters::SEARCH_PROGRESS_INTERVAL as PROGRESS_INTERVAL;
 
+
 use std::{
     cell::Cell,
     cmp::Ordering,
@@ -50,6 +51,10 @@ mod cost_tests;
 
 #[cfg(test)]
 mod control_tests;
+
+
+#[cfg(test)]
+mod guided_fallback_tests;
 
 
 /// Explicit resource limits for one synchronous search.
@@ -229,24 +234,30 @@ pub trait SearchProblem {
     /// Finite owned iterator over legal transitions in deterministic order.
     type Successors: Iterator<Item = (Self::Action, Self::State)>;
 
+
     /// Return the unchanged starting state for this invocation.
     fn initial(&self) -> Self::State;
+
 
     /// Whether the supplied state meets this problem's goal condition.
     fn is_goal(&self, state: Self::State) -> bool;
 
+
     /// Generate every legal edge without changing the problem.
     fn successors(&self, state: Self::State) -> Self::Successors;
+
 
     /// Return a stable nonnegative edge cost; zero-cost cycles are safely dominated.
     fn action_cost(&self, _state: Self::State, _action: Self::Action) -> u32 {
         1
     }
 
+
     /// Return an admissible lower bound in the declared action-cost units.
     fn heuristic(&self, _state: Self::State) -> u32 {
         0
     }
+
 
     /// Prove that no goal is reachable, or conservatively return false.
     fn impossible(&self, _state: Self::State) -> bool {
@@ -936,13 +947,161 @@ pub fn solve_guided_unlimited_with_control<P: SearchProblem>(
 }
 
 
-/// Run one exact or weighted search, leaving final notification to the caller.
+/// Seek a complete route, retaining a maximum-score fallback only on exhaustion.
+///
+/// Uses the same uncapped guided traversal as
+/// [`solve_guided_unlimited_with_control`]. A full goal always takes precedence.
+/// Only exhaustion of the unpruned graph releases a partial route: its score is
+/// globally maximal, with minimum declared cost and then depth at that score.
+/// Candidate history is retained by index in the same immutable arena; no second
+/// search or repeated prefix reconstruction is performed. State equality must
+/// preserve goals, equivalent successors and declared costs, as required by
+/// [`SearchProblem`], and must additionally preserve scores. Complete routes make
+/// no minimum-cost claim.
+///
+/// # Errors
+/// Cancellation, allocation, arithmetic, invariant or reconstruction failure
+/// returns `Stopped` without actions. No configured resource cutoff is added.
+///
+/// # Panics
+/// Caller problem, score, guidance, observer and checkpoint panics propagate.
+pub fn solve_guided_unlimited_best_effort_with_control<P: BestEffortProblem>(
+    problem: &P,
+    cancel: &AtomicBool,
+    guidance: &dyn Fn(P::State) -> u32,
+    progress: Option<&mut dyn FnMut(SearchProgress)>,
+    checkpoint: Option<&dyn Fn() -> Duration>,
+) -> BestEffortOutcome<P::Action> {
+    let mut engine = Engine::<P::State, P::Action>::new(SearchLimits::default(), cancel);
+    engine.limits = None;
+    engine.checkpoint = checkpoint;
+    let mut reporter = ProgressReporter::new(progress);
+    reporter.report(engine.stats(), false);
+    let score = |state| problem.score(state);
+    let mut tracker = ScoreTracker {
+        score: &score,
+        best: None,
+    };
+    let result = run_tracked(
+        problem,
+        &mut engine,
+        SearchOptions::default(),
+        &mut reporter,
+        Some(guidance),
+        Some(&mut tracker),
+    );
+    let outcome = match result {
+        SearchOutcome::Solved { actions, stats } => BestEffortOutcome::Solved {
+            actions: actions.into_vec(),
+            minimum_proven: false,
+            stats,
+        },
+        SearchOutcome::Unsolvable { .. } => {
+            let prefix = tracker
+                .best
+                .ok_or(SearchStop::InternalInvariant)
+                .and_then(|best| {
+                    engine
+                        .route(best.index, &mut reporter)
+                        .map(|actions| (best.score, actions))
+                });
+            match prefix.and_then(|prefix| {
+                engine.poll_with_progress(&mut reporter)?;
+                Ok(prefix)
+            }) {
+                Ok((score, actions)) => BestEffortOutcome::Partial {
+                    actions: actions.into_vec(),
+                    score,
+                    proof: PartialProof::Exhaustive,
+                    stats: engine.stats(),
+                },
+                Err(reason) => BestEffortOutcome::Stopped {
+                    reason,
+                    stats: engine.stats(),
+                },
+            }
+        }
+        SearchOutcome::Stopped { reason, stats } => BestEffortOutcome::Stopped { reason, stats },
+    };
+    let stats = match &outcome {
+        BestEffortOutcome::Solved { stats, .. }
+        | BestEffortOutcome::Partial { stats, .. }
+        | BestEffortOutcome::Stopped { stats, .. } => *stats,
+    };
+    reporter.report(stats, true);
+    if matches!(
+        &outcome,
+        BestEffortOutcome::Solved { .. } | BestEffortOutcome::Partial { .. }
+    ) && let Err(reason) = engine.poll()
+    {
+        return BestEffortOutcome::Stopped {
+            reason,
+            stats: engine.stats(),
+        };
+    }
+    outcome
+}
+
+
+/// One scored immutable history record, ordered by score and then route label.
+#[derive(Clone, Copy)]
+struct ScoredNode {
+    /// Exact physical arena record, including its original parent chain.
+    index: usize,
+    /// Deterministic caller score of this record's state.
+    score: u32,
+    /// Cost and depth used only to break equal-score ties.
+    label: PathLabel,
+}
+
+
+/// Constant-size fallback bookkeeping; the arena remains the history owner.
+struct ScoreTracker<'a, S> {
+    /// Pure score, stable across equal states.
+    score: &'a dyn Fn(S) -> u32,
+    /// Best successfully inserted record, absent before root insertion.
+    best: Option<ScoredNode>,
+}
+
+
+impl<S: Copy> ScoreTracker<'_, S> {
+    /// Retain larger scores, then lower cost and depth, without copying routes.
+    fn consider(&mut self, index: usize, state: S, label: PathLabel) {
+        let score = (self.score)(state);
+        if self
+            .best
+            .is_none_or(|best| score > best.score || (score == best.score && label < best.label))
+        {
+            self.best = Some(ScoredNode {
+                index,
+                score,
+                label,
+            });
+        }
+    }
+}
+
+
+/// Preserve the existing complete-only traversal and its callback behaviour.
 fn run<P: SearchProblem>(
     problem: &P,
     engine: &mut Engine<'_, P::State, P::Action>,
     options: SearchOptions,
     progress: &mut ProgressReporter<'_>,
     guidance: Option<&dyn Fn(P::State) -> u32>,
+) -> SearchOutcome<P::Action> {
+    run_tracked(problem, engine, options, progress, guidance, None)
+}
+
+
+/// Run one traversal, optionally retaining scored record indices for exhaustion.
+fn run_tracked<P: SearchProblem>(
+    problem: &P,
+    engine: &mut Engine<'_, P::State, P::Action>,
+    options: SearchOptions,
+    progress: &mut ProgressReporter<'_>,
+    guidance: Option<&dyn Fn(P::State) -> u32>,
+    mut tracker: Option<&mut ScoreTracker<'_, P::State>>,
 ) -> SearchOutcome<P::Action> {
     if let Err(reason) = engine.poll_with_progress(progress) {
         return engine.stopped(reason);
@@ -1001,6 +1160,9 @@ fn run<P: SearchProblem>(
         weight,
     ) {
         return engine.stopped(reason);
+    }
+    if let Some(tracker) = tracker.as_mut() {
+        tracker.consider(0, initial, PathLabel::default());
     }
 
     loop {
@@ -1086,6 +1248,7 @@ fn run<P: SearchProblem>(
             } else {
                 0
             };
+            let next_index = engine.nodes.len();
             if let Err(reason) = engine.insert(
                 Node {
                     state: next,
@@ -1098,6 +1261,9 @@ fn run<P: SearchProblem>(
                 weight,
             ) {
                 return engine.stopped(reason);
+            }
+            if let Some(tracker) = tracker.as_mut() {
+                tracker.consider(next_index, next, label);
             }
         }
     }

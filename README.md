@@ -1,4 +1,57 @@
-# xSAR Core Architecture — 0.11.1 host verified
+# xSAR Core Architecture, 0.16.1 (host-qualified)
+
+## 0.16.1 — source-up and midpoint path regression (host-qualified)
+
+Exercise the existing bounded four-point ABS API with source-up45, a caller-supplied native endpoint midpoint, destination-up45 and exact destination. Extend native bounds, quantised alias and timing coverage. All 51 fresh paired host gates passed with 1,893 application, 366 library and 80 console tests. The full suites report zero failed, ignored, measured or filtered tests. See [contract](../qmp-qemu-socket/docs/FreeCell-Source-Midpoint-3.1.16.md) and [verification](../qmp-qemu-socket/docs/Verification-3.1.16.md).
+
+## 0.16.0 — bounded diagnostic path (host-qualified)
+
+Add `QmpClient::diagnostic_drag_path_with_timing` for exactly four caller-supplied held ABS points. Validate/map the complete path before callbacks/I/O, refuse mapped source/final aliases, retain intermediate aliases, sourceACK and fresh routing beforeDOWN, selected pacing, all held replies afterUP and existing original-cause targeted safetyUP/no replay. Existing diagnostic methods keep their four-pixel approach; normal drag, REL, QmpConfig, observer, dependencies and feature defaults remain unchanged. Application3.1.15 supplies its quarter-card path. All 51 fresh paired host gates passed: 1,891 application, 365 library and 80 console tests, zero failed, ignored, measured or filtered. Windows acceptance remains separate. See [contract](../qmp-qemu-socket/docs/FreeCell-Quarter-3.1.15.md) and [verification](../qmp-qemu-socket/docs/Verification-3.1.15.md).
+
+## 0.15.1 — destination approach trial (host-qualified)
+
+The existing timed ABS diagnostic uses a checked point four native pixels above destination then exact destination. Both timing variants and signatures are unchanged; y below four refuses before I/O. Ordinary drag, REL, source ACK and release-only recovery retain their contracts. All 51 fresh paired host gates passed: 1,886 application, 354 library and 80 console tests, zero failed/ignored/filtered. Fresh Windows acceptance remains separate; see paired [contract](../qmp-qemu-socket/docs/FreeCell-Approach-3.1.13.md) and [verification](../qmp-qemu-socket/docs/Verification-3.1.13.md).
+
+## 0.15.0, typed ABS diagnostic timing and native midpoint (host-qualified)
+
+Add `DiagnosticDragTiming::{TwoSeconds, HalfSecond}` and `QmpClient::diagnostic_drag_with_timing`. Retain `diagnostic_drag` as the two-second default. Precompute the widened native midpoint before mapping and I/O; send source, DOWN, midpoint, exact destination, UP with four selected waits. Preserve source ACK gating, release before held-reply collection, STOP and targeted release-only recovery. Normal drag, REL, configuration, observer transport and dependency-free defaults are unchanged. The existing diagnostic default changes from one to two seconds; this is an approved timing change alongside the additive API. All 51 fresh paired host gates passed: 1,886 application, 354 library and 80 console tests, zero failed/ignored/filtered. Fresh Windows acceptance remains separate. See [contract](../qmp-qemu-socket/docs/FreeCell-Midpoint-3.1.12.md).
+
+## 0.14.3, visible five-packet ABS diagnostic
+
+The existing QmpClient::diagnostic_drag retains source ABS/ACK → LEFT down → destination ABS → identical destination ABS → LEFT up, now with four one-second pauses. The source pause precedes the final fresh routing query; held replies remain collected only after UP. Authority checks surround each pause and existing captured-pointer release-only recovery never replays DOWN or motion.
+
+Public signatures, normal drag, REL probe, configuration, observer, dependencies and defaults are unchanged. Paired application 3.1.11 owns unchanged identity/effect and cached-retry policy. All 51 fresh paired host gates passed: 1,882 application, 353 library and 80 console tests, zero failed/ignored/filtered. Windows acceptance remains separate. See [contract](../qmp-qemu-socket/docs/FreeCell-Pacing-3.1.11.md) and [verification](../qmp-qemu-socket/docs/Verification-3.1.11.md).
+
+## 0.14.2, duplicate-destination ABS diagnostic
+
+The existing `QmpClient::diagnostic_drag` intentionally changes behaviour. It sends source ABS and requires its acknowledgement, freshly verifies pointer routing, then sends LEFT down, destination ABS, the identical destination ABS and LEFT up as four separate requests. It collects all four held-phase acknowledgements only after UP. The gesture adds no intentional hold or settling wait. Socket I/O and synchronous observation still take time.
+
+Authority guards remain at input boundaries. Any uncertain held delivery uses the captured pointer for old-stream and fresh-stream release-only recovery, preserving the original failure without replaying DOWN or movement. The original pointer is restored only after confirmed UP and continued caller authority. Delivery acknowledgements grant no semantic effect authority.
+
+The public signature, `QmpConfig`, normal `drag`, separate REL probe, observer contract, dependencies and default features remain unchanged. Application 3.1.10 owns recognition, cached-route retry and guest effect proof. All 51 fresh paired host gates passed: 1,881 application, 351 library and 80 console tests, zero failed/ignored/filtered. Fresh guest acceptance remains separate. See the paired [correction contract](../qmp-qemu-socket/docs/FreeCell-Corrections-3.1.10.md) and [verification record](../qmp-qemu-socket/docs/Verification-3.1.10.md).
+
+##
+
+## 0.14.1 — stepped diagnostics (host-qualified)
+
+Existing diagnostic methods now explicitly select and verify queried pointers. ABS precomputes ten checked native positions with a small first move and exact endpoint; REL sends ten tiny signed device-count updates as a movement probe. Two-second phase delays, release-before-ACK collection, original-cause recovery and no motion replay remain. Public signatures, ordinary drag, defaults and dependencies stay unchanged. All 51 fresh host gates passed; fresh live guest acceptance is pending.
+ 0.14.0 — selectable relative drag diagnostics (host-qualified)
+
+Add `QmpClient::diagnostic_relative_drag` alongside the existing absolute diagnostic. The caller supplies native source/destination points and an authority guard. Both diagnostics now wait two seconds between source positioning, LEFT down, held movement and LEFT up; neither performs a standalone source or destination click. Normal `drag`, `QmpConfig` and existing constructor signatures retain their behaviour. The separate current-pointer click API remains available to callers but is not part of either drag.
+
+REL first queries the pointer inventory, positions the source through checked absolute mapping, then selects and verifies the unique relative mouse before DOWN. Signed native point deltas are sent as relative device counts. They are neither 0–32767 absolute units nor a promise of guest-pixel travel: acceleration and scaling are guest concerns. Only after confirmed release and continued caller authority does it restore the original pointer.
+
+REL uncertainty recovery adds an explicit routing exception: reselect the captured relative mouse before safety UP on the original/fresh recovery connection. It never replays DOWN or motion and does not restore the original pointer after STOP or failure. A stopped trial may therefore leave the relative pointer selected. The existing observer records exact JSON, handshake, mouse-selection and recovery writes; the application owns presentation and persistence, including its visible LOG and existing private session log.
+
+The new method is additive; changing the existing diagnostic phase delay from one to two seconds is an intentional timing change. No dependency, default-feature, schema or ordinary gesture change is included. All 51 paired host qualification gates passed for xSAR 0.14.0 with application 3.1.7; no live guest acceptance is claimed.
+
+## 0.13.0 — observed QMP and guarded diagnostic gestures
+
+Add optional outgoing-wire observation before capability negotiation and preserve it through release-only recovery. The caller owns the observer and its log destination; JSON attempts, completed writes and failures remain distinct from QMP acknowledgement or guest effect. Add separately guarded slow-drag and current-pointer click operations for the approved application diagnostic. Existing constructors, configuration, ordinary gesture policies, dependencies and defaults remain. See [paired verification](../qmp-qemu-socket/docs/Verification-3.1.6.md).
+
+## 0.12.0 — complete-first maximum-removal fallback
+
+Additive unlimited guided scored search retains the best immutable physical endpoint during the complete-goal attempt. True graph exhaustion exposes a maximum partial route with exact cost/depth tie-breaking; interruption exposes no prefix. Free Cell independently replays every complete or partial route, preserving physical indices and automatic transfers. Existing complete-only and bounded APIs, defaults, dependencies and schema remain unchanged. See [paired verification](../qmp-qemu-socket/docs/Verification-3.1.5.md).
 
 ## 0.11.1 — guarded neutral QMP drag
 

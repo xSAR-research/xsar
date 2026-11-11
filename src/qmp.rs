@@ -9,7 +9,9 @@ use std::{
     io::{BufRead, BufReader, Write},
     net::Shutdown,
     os::unix::net::UnixStream,
+    panic::{AssertUnwindSafe, catch_unwind},
     path::{Path, PathBuf},
+    sync::Arc,
     thread,
     time::Duration,
 };
@@ -18,6 +20,99 @@ use serde_json::{Value, json};
 use thiserror::Error;
 
 use crate::geometry::{GeometryError, PixelPoint, pixel_to_qmp_axis};
+
+
+/// Physical stream within one caller-correlated connection and its release-only recovery.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum QmpWireConnection {
+    /// Original caller connection; its numeric request identifiers start at one.
+    Primary,
+    /// Fresh release-only recovery stream; its identifiers restart at one.
+    ReleaseRecovery,
+}
+
+
+/// Socket-write boundary at which an outgoing request failed.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum QmpWireStage {
+    /// Compact JSON serialization or its socket write failed; partial bytes are possible.
+    JsonWrite,
+    /// Writing the terminating newline failed after the JSON write completed.
+    NewlineWrite,
+    /// Flushing the completed newline-delimited request failed.
+    Flush,
+}
+
+
+/// Borrowed outgoing wire evidence; write completion never proves acknowledgement or guest effect.
+#[derive(Debug)]
+pub enum QmpWireEvent<'a> {
+    /// Complete intended compact JSON before its first socket-write attempt.
+    Attempted {
+        /// Original or fresh release-recovery physical stream.
+        connection: QmpWireConnection,
+        /// Exact numeric identifier serialized in this request.
+        id: u64,
+        /// Exact compact JSON text; the socket write appends one newline.
+        json: &'a str,
+    },
+    /// The complete JSON, newline and flush succeeded; no response has been inferred.
+    Flushed {
+        /// Physical stream on which this write completed.
+        connection: QmpWireConnection,
+        /// Numeric identifier of the completed write.
+        id: u64,
+    },
+    /// A socket-write boundary failed; this preserves the original transport error.
+    Failed {
+        /// Physical stream on which the attempt failed.
+        connection: QmpWireConnection,
+        /// Numeric identifier of the failed attempt.
+        id: u64,
+        /// Last attempted serialization, newline or flush boundary.
+        stage: QmpWireStage,
+        /// Original borrowed error; observation cannot replace or consume it.
+        error: &'a QmpError,
+    },
+}
+
+
+/// Passive caller-owned wire observer, installed before capability negotiation.
+///
+/// Return promptly and perform no guest input. Each original connection should use
+/// an observer instance carrying the caller's own connection/session correlation;
+/// that same instance follows its fresh release-only recovery. Unwinding observer
+/// panics are contained, but process-aborting panics cannot be recovered. The
+/// library owns no logging files, environment selection or observer error policy.
+pub trait QmpWireObserver: Send + Sync {
+    /// Inspect one synchronous borrowed boundary without changing transport outcomes.
+    fn observe(&self, event: QmpWireEvent<'_>);
+}
+
+
+/// Named minimum intervals between absolute diagnostic input phases.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum DiagnosticDragTiming {
+    /// Wait two seconds between acknowledged source positioning and each held input phase.
+    TwoSeconds,
+    /// Wait 500 milliseconds between acknowledged source positioning and each held input phase.
+    HalfSecond,
+}
+
+
+impl DiagnosticDragTiming {
+    /// Return the common source-settle and held-phase minimum interval.
+    fn delay(self) -> Duration {
+        match self {
+            Self::TwoSeconds => Duration::from_secs(2),
+            Self::HalfSecond => Duration::from_millis(500),
+        }
+    }
+}
+
+
+/// Native destination offset fixed by the four-pixel upward-approach diagnostic.
+const DIAGNOSTIC_APPROACH_NATIVE_PIXELS: i32 = 4;
 
 
 /// Caller-selected per-I/O timeouts and input pacing for one QMP connection.
@@ -154,6 +249,18 @@ impl QmpProbe {
 }
 
 
+/// Fresh query-mice identity; this is routing evidence, never guest-effect proof.
+#[derive(Clone, Copy, Debug)]
+struct DiagnosticPointer {
+    /// Non-negative QEMU mouse index accepted by the restricted HMP selector.
+    index: i32,
+    /// Whether this handler accepts absolute rather than relative motion.
+    absolute: bool,
+    /// Whether QEMU reports this pointer as current in the fresh inventory.
+    current: bool,
+}
+
+
 /// Minimal newline-delimited JSON client for a local QEMU QMP Unix socket.
 ///
 /// It exposes status, pointer, capture and paired-input commands; it does not
@@ -171,6 +278,10 @@ pub struct QmpClient {
     usable: bool,
     /// Timing retained unchanged when release recovery opens a fresh connection.
     config: QmpConfig,
+    /// Caller-owned sink; every callback is isolated, preserving this client's unwind markers.
+    observer: Option<AssertUnwindSafe<Arc<dyn QmpWireObserver>>>,
+    /// Physical stream identity relative to the caller's original connection.
+    connection: QmpWireConnection,
 }
 
 
@@ -191,6 +302,36 @@ impl QmpClient {
     }
 
 
+    /// Negotiate QMP with passive outgoing JSON observation, including capability negotiation.
+    ///
+    /// The shared observer follows release-only recovery without changing timing,
+    /// original errors or input policy. See [`QmpWireObserver`] for callback bounds.
+    ///
+    /// # Errors
+    /// Returns the same timeout-configuration, connection, greeting and negotiation
+    /// errors as [`Self::connect_with_config`]. Observer return values cannot fail I/O.
+    pub fn connect_with_observer(
+        path: &Path,
+        config: QmpConfig,
+        observer: Arc<dyn QmpWireObserver>,
+    ) -> Result<Self, QmpError> {
+        Self::connect_observed(path, config, Some(observer), QmpWireConnection::Primary)
+    }
+
+
+    /// Open one original or release-recovery stream with its caller-owned sink already attached.
+    fn connect_observed(
+        path: &Path,
+        config: QmpConfig,
+        observer: Option<Arc<dyn QmpWireObserver>>,
+        connection: QmpWireConnection,
+    ) -> Result<Self, QmpError> {
+        let config = config.validate()?;
+        let writer = UnixStream::connect(path)?;
+        Self::from_connected_stream_observed(path, writer, config, observer, connection)
+    }
+
+
     /// Configures a connected stream with default timing for transport tests.
     #[cfg(test)]
     fn from_connected_stream(path: &Path, writer: UnixStream) -> Result<Self, QmpError> {
@@ -203,6 +344,18 @@ impl QmpClient {
         path: &Path,
         writer: UnixStream,
         config: QmpConfig,
+    ) -> Result<Self, QmpError> {
+        Self::from_connected_stream_observed(path, writer, config, None, QmpWireConnection::Primary)
+    }
+
+
+    /// Configure one stream before its greeting and capabilities are exchanged.
+    fn from_connected_stream_observed(
+        path: &Path,
+        writer: UnixStream,
+        config: QmpConfig,
+        observer: Option<Arc<dyn QmpWireObserver>>,
+        connection: QmpWireConnection,
     ) -> Result<Self, QmpError> {
         let config = config.validate()?;
         writer.set_read_timeout(Some(config.io_timeout))?;
@@ -218,6 +371,8 @@ impl QmpClient {
             next_id: 1,
             usable: true,
             config,
+            observer: observer.map(AssertUnwindSafe),
+            connection,
         };
 
         let greeting = client.read_packet()?;
@@ -395,6 +550,581 @@ impl QmpClient {
     }
 
 
+    /// Deliver the absolute approach diagnostic with two-second phase intervals.
+    ///
+    /// Uses [`DiagnosticDragTiming::TwoSeconds`] through
+    /// [`Self::diagnostic_drag_with_timing`], retaining this entry point's signature.
+    ///
+    /// # Errors
+    /// Returns the same checked-coordinate, routing, authority and release-recovery
+    /// errors as [`Self::diagnostic_drag_with_timing`].
+    pub fn diagnostic_drag<F>(
+        &mut self,
+        source: PixelPoint,
+        destination: PixelPoint,
+        guest_width: u32,
+        guest_height: u32,
+        permitted: F,
+    ) -> Result<(), QmpError>
+    where
+        F: FnMut() -> bool,
+    {
+        self.diagnostic_drag_with_timing(
+            source,
+            destination,
+            (guest_width, guest_height),
+            DiagnosticDragTiming::TwoSeconds,
+            permitted,
+        )
+    }
+
+
+    /// Deliver one absolute diagnostic through a checked four-pixel upward approach.
+    ///
+    /// Freshly select and verify the unique absolute pointer before positioning
+    /// the source. After its ACK, wait the selected interval before a fresh
+    /// routing check and LEFT down. Use that same interval between DOWN, approach
+    /// ABS, exact destination ABS and LEFT up: four waits across five input packets.
+    /// The approach is four native pixels above the destination, at its exact x
+    /// and checked y minus four, independently mapped by the normal absolute-axis
+    /// conversion. Destinations with y below four refuse without clamping or a
+    /// fallback. An approach may map onto an endpoint; mapped endpoint aliases
+    /// still refuse.
+    /// Each input is a separate request. Collect every held-phase reply only
+    /// after UP has been transmitted, with no additional wait after UP. Socket
+    /// I/O and synchronous observation can add time to these minimum intervals.
+    ///
+    /// Routing cannot be pinned across the held interval. Restore the original
+    /// pointer only after confirmed UP and while the caller still permits input.
+    /// This does not change [`Self::drag`], capture policy or add another click.
+    ///
+    /// # Errors
+    /// Invalid or mapped-alias endpoints, or a destination y below four, fail
+    /// before I/O. Ambiguous or changed routing and revoked authority fail before
+    /// pressing where possible. Any possible post-DOWN failure preserves its
+    /// cause and reselects only the captured target for old/fresh safety UP.
+    /// DOWN and motion are never replayed.
+    /// STOP can leave the diagnostic pointer selected. Release is never rollback.
+    pub fn diagnostic_drag_with_timing<F>(
+        &mut self,
+        source: PixelPoint,
+        destination: PixelPoint,
+        frame: (u32, u32),
+        timing: DiagnosticDragTiming,
+        permitted: F,
+    ) -> Result<(), QmpError>
+    where
+        F: FnMut() -> bool,
+    {
+        self.diagnostic_drag_with_delay(source, destination, frame, timing.delay(), permitted)
+    }
+
+
+    /// Deliver one absolute diagnostic through exactly four caller-supplied held points.
+    ///
+    /// Validate and map the source and all four native points before checking
+    /// authority or performing I/O. The last point is the exact release endpoint
+    /// and must map differently from the source. Intermediate points may repeat
+    /// each other or map onto either endpoint; each still receives its own request.
+    /// The caller owns the path's geometry and diagnostic meaning.
+    ///
+    /// Freshly select and verify the unique absolute pointer, position the source
+    /// and await its ACK, then wait the selected interval and freshly check routing
+    /// before DOWN. Send DOWN, four ABS requests in slice order and UP separately,
+    /// with the same selected minimum interval before every subsequent input:
+    /// seven input packets and six waits. Collect all six held-phase replies only
+    /// after transmitting UP, without an additional post-UP wait. Socket I/O and
+    /// synchronous observation may extend these minimum intervals.
+    ///
+    /// Routing cannot be pinned throughout the held interval. Restore the original
+    /// pointer only after confirmed UP while the caller still permits input.
+    ///
+    /// # Errors
+    /// A point count other than four, invalid native coordinates or mapped-alias
+    /// source/final endpoints fail before authority checks or I/O. Ambiguous or
+    /// changed pointer routing and revoked authority fail before pressing where
+    /// possible. Any possible post-DOWN failure preserves its cause and reselects
+    /// only the captured pointer for old/fresh safety UP; DOWN and motion are never
+    /// replayed. STOP may leave that pointer selected. Release is never rollback.
+    pub fn diagnostic_drag_path_with_timing<F>(
+        &mut self,
+        source: PixelPoint,
+        held_points: &[PixelPoint],
+        frame: (u32, u32),
+        timing: DiagnosticDragTiming,
+        permitted: F,
+    ) -> Result<(), QmpError>
+    where
+        F: FnMut() -> bool,
+    {
+        self.diagnostic_drag_path_with_delay(source, held_points, frame, timing.delay(), permitted)
+    }
+
+
+    /// Validate the complete bounded path before using the common release-safe sequence.
+    fn diagnostic_drag_path_with_delay<F: FnMut() -> bool>(
+        &mut self,
+        source: PixelPoint,
+        held_points: &[PixelPoint],
+        frame: (u32, u32),
+        delay: Duration,
+        mut permitted: F,
+    ) -> Result<(), QmpError> {
+        let [first, second, third, last] = held_points else {
+            return Err(QmpError::Protocol(
+                "diagnostic absolute path requires exactly four held points".into(),
+            ));
+        };
+        let from = Self::diagnostic_absolute_motion(source, frame)?;
+        let movements = [first, second, third, last]
+            .into_iter()
+            .map(|&point| Self::diagnostic_absolute_motion(point, frame))
+            .collect::<Result<Vec<_>, _>>()?;
+        if movements.last() == Some(&from) {
+            return Err(QmpError::Protocol("drag endpoints must differ".into()));
+        }
+        self.diagnostic_held_input(from, movements, true, delay, &mut permitted)
+    }
+
+
+    /// Deliver the same checked ABS sequence with independently selected diagnostic pacing.
+    fn diagnostic_drag_with_delay<F: FnMut() -> bool>(
+        &mut self,
+        source: PixelPoint,
+        destination: PixelPoint,
+        frame: (u32, u32),
+        delay: Duration,
+        mut permitted: F,
+    ) -> Result<(), QmpError> {
+        let from = Self::diagnostic_absolute_motion(source, frame)?;
+        let to = Self::diagnostic_absolute_motion(destination, frame)?;
+        if from == to {
+            return Err(QmpError::Protocol("drag endpoints must differ".into()));
+        }
+        let approach_y = destination
+            .y
+            .checked_sub(DIAGNOSTIC_APPROACH_NATIVE_PIXELS)
+            .filter(|&y| y >= 0)
+            .ok_or_else(|| {
+                QmpError::Protocol("diagnostic approach requires destination y >= 4".into())
+            })?;
+        let approach =
+            Self::diagnostic_absolute_motion(PixelPoint::new(destination.x, approach_y), frame)?;
+        let interrupted = || QmpError::Protocol("diagnostic input authority interrupted".into());
+        if !permitted() {
+            return Err(interrupted());
+        }
+        let pointers = self.diagnostic_pointers()?;
+        let original = pointers
+            .iter()
+            .find(|pointer| pointer.current)
+            .copied()
+            .ok_or_else(|| {
+                QmpError::Protocol("query-mice did not identify a current pointer".into())
+            })?;
+        let selected = Self::diagnostic_unique_pointer(&pointers, true)?;
+        self.diagnostic_select_pointer(selected, &mut permitted)?;
+        if !permitted() {
+            return Err(interrupted());
+        }
+        self.execute("input-send-event", Some(from))?;
+        Self::diagnostic_wait(delay, &mut permitted)?;
+        let fresh = self.diagnostic_pointers()?;
+        if !permitted() {
+            return Err(interrupted());
+        }
+        if !fresh.iter().any(|pointer| {
+            pointer.current
+                && pointer.index == selected.index
+                && pointer.absolute == selected.absolute
+        }) || Self::diagnostic_unique_pointer(&fresh, true)?.index != selected.index
+        {
+            return Err(QmpError::Protocol(
+                "diagnostic pointer changed before button down".into(),
+            ));
+        }
+        let up = json!({"events":[{"type":"btn","data":{"button":"left","down":false}}]});
+        let action = (|| {
+            let down = self.send_request(
+                "input-send-event",
+                Some(json!({"events":[{"type":"btn","data":{"button":"left","down":true}}]})),
+            )?;
+            Self::diagnostic_wait(delay, &mut permitted)?;
+            let approached = self.send_request("input-send-event", Some(approach))?;
+            Self::diagnostic_wait(delay, &mut permitted)?;
+            let moved = self.send_request("input-send-event", Some(to))?;
+            Self::diagnostic_wait(delay, &mut permitted)?;
+            let released = self.send_request("input-send-event", Some(up.clone()))?;
+            self.await_responses(&[down, approached, moved, released])
+                .map(|_| ())
+        })();
+        action.map_err(|error| self.recover_diagnostic_release(selected, up, error))?;
+        if !permitted() {
+            return Err(interrupted());
+        }
+        if original.index != selected.index {
+            self.diagnostic_select_pointer(original, &mut permitted)?;
+        }
+        Ok(())
+    }
+
+
+    /// Probe relative movement with ten small, direction-only held increments.
+    ///
+    /// Validate both native endpoints, explicitly select the unique absolute
+    /// pointer to position the source, then freshly select and verify the unique
+    /// relative pointer before DOWN. Each of ten REL requests uses two device
+    /// counts per nonzero direction axis; their total is not the native endpoint
+    /// delta and does not promise arrival at the destination. Guest acceleration
+    /// and device scaling remain outside this transport's guarantees.
+    ///
+    /// Separate all source/DOWN/REL/UP phases by at least two seconds. Collect
+    /// every held-phase reply only after UP. After confirmed UP, restore the
+    /// original pointer only while permitted. No additional click is included.
+    /// QMP cannot pin BTN/REL to one handler throughout the held interval.
+    ///
+    /// # Errors
+    /// Invalid/zero endpoints or ambiguous routing refuse before pressing.
+    /// Possible post-DOWN failure preserves its cause and reselects only the
+    /// captured target for old/fresh safety UP. Never replay DOWN or REL, or
+    /// restore the original pointer after failure or STOP. Release is not rollback.
+    pub fn diagnostic_relative_drag<F: FnMut() -> bool>(
+        &mut self,
+        source: PixelPoint,
+        destination: PixelPoint,
+        width: u32,
+        height: u32,
+        permitted: F,
+    ) -> Result<(), QmpError> {
+        self.diagnostic_relative_drag_with_delay(
+            source,
+            destination,
+            (width, height),
+            Duration::from_secs(2),
+            permitted,
+        )
+    }
+
+
+    /// Prepare a bounded direction probe before I/O, preserving native endpoint validation.
+    fn diagnostic_relative_drag_with_delay<F: FnMut() -> bool>(
+        &mut self,
+        source: PixelPoint,
+        destination: PixelPoint,
+        frame: (u32, u32),
+        delay: Duration,
+        mut permitted: F,
+    ) -> Result<(), QmpError> {
+        let from = Self::diagnostic_absolute_motion(source, frame)?;
+        let _ = Self::diagnostic_absolute_motion(destination, frame)?;
+        let dx = destination
+            .x
+            .checked_sub(source.x)
+            .ok_or_else(|| QmpError::Protocol("relative X delta overflow".into()))?;
+        let dy = destination
+            .y
+            .checked_sub(source.y)
+            .ok_or_else(|| QmpError::Protocol("relative Y delta overflow".into()))?;
+        if dx == 0 && dy == 0 {
+            return Err(QmpError::Protocol(
+                "relative drag endpoints must differ".into(),
+            ));
+        }
+        let movement = json!({"events":[
+            {"type":"rel","data":{"axis":"x","value":dx.signum() * 2}},
+            {"type":"rel","data":{"axis":"y","value":dy.signum() * 2}}
+        ]});
+        self.diagnostic_held_input(from, vec![movement; 10], false, delay, &mut permitted)
+    }
+
+
+    /// Map one validated native point without rounding, clamping or endpoint substitution.
+    fn diagnostic_absolute_motion(point: PixelPoint, frame: (u32, u32)) -> Result<Value, QmpError> {
+        let x = u32::try_from(point.x)
+            .map_err(|_| QmpError::Protocol("negative drag X coordinate".into()))?;
+        let y = u32::try_from(point.y)
+            .map_err(|_| QmpError::Protocol("negative drag Y coordinate".into()))?;
+        Ok(json!({"events":[
+            {"type":"abs","data":{"axis":"x","value":pixel_to_qmp_axis(x, frame.0)?}},
+            {"type":"abs","data":{"axis":"y","value":pixel_to_qmp_axis(y, frame.1)?}}
+        ]}))
+    }
+
+
+    /// Select checked routing, send one bounded held sequence, then conditionally restore.
+    fn diagnostic_held_input<F: FnMut() -> bool>(
+        &mut self,
+        from: Value,
+        movements: Vec<Value>,
+        absolute: bool,
+        delay: Duration,
+        permitted: &mut F,
+    ) -> Result<(), QmpError> {
+        Self::diagnostic_wait(Duration::ZERO, permitted)?;
+        let pointers = self.diagnostic_pointers()?;
+        let original = pointers
+            .iter()
+            .find(|pointer| pointer.current)
+            .copied()
+            .ok_or_else(|| {
+                QmpError::Protocol("query-mice did not identify a current pointer".into())
+            })?;
+        let source_pointer = Self::diagnostic_unique_pointer(&pointers, true)?;
+        if !absolute {
+            let _ = Self::diagnostic_unique_pointer(&pointers, false)?;
+        }
+        self.diagnostic_select_pointer(source_pointer, permitted)?;
+        Self::diagnostic_wait(Duration::ZERO, permitted)?;
+        self.execute("input-send-event", Some(from))?;
+        let selected = if absolute {
+            source_pointer
+        } else {
+            Self::diagnostic_wait(Duration::ZERO, permitted)?;
+            let pointers = self.diagnostic_pointers()?;
+            let selected = Self::diagnostic_unique_pointer(&pointers, false)?;
+            self.diagnostic_select_pointer(selected, permitted)?;
+            selected
+        };
+        Self::diagnostic_wait(delay, permitted)?;
+        let fresh = self.diagnostic_pointers()?;
+        Self::diagnostic_wait(Duration::ZERO, permitted)?;
+        if !fresh.iter().any(|pointer| {
+            pointer.current
+                && pointer.index == selected.index
+                && pointer.absolute == selected.absolute
+        }) || Self::diagnostic_unique_pointer(&fresh, absolute)?.index != selected.index
+        {
+            return Err(QmpError::Protocol(
+                "diagnostic pointer changed before button down".into(),
+            ));
+        }
+        let up = json!({"events":[{"type":"btn","data":{"button":"left","down":false}}]});
+        let action = (|| {
+            let mut ids = Vec::with_capacity(movements.len() + 2);
+            ids.push(self.send_request(
+                "input-send-event",
+                Some(json!({"events":[{"type":"btn","data":{"button":"left","down":true}}]})),
+            )?);
+            for movement in movements {
+                Self::diagnostic_wait(delay, permitted)?;
+                ids.push(self.send_request("input-send-event", Some(movement))?);
+            }
+            Self::diagnostic_wait(delay, permitted)?;
+            ids.push(self.send_request("input-send-event", Some(up.clone()))?);
+            self.await_responses(&ids).map(|_| ())
+        })();
+        action.map_err(|error| self.recover_diagnostic_release(selected, up, error))?;
+        Self::diagnostic_wait(Duration::ZERO, permitted)?;
+        if original.index != selected.index {
+            self.diagnostic_select_pointer(original, permitted)?;
+        }
+        Ok(())
+    }
+
+
+    /// Refuse missing or ambiguous fresh handlers instead of guessing a mouse index.
+    fn diagnostic_unique_pointer(
+        pointers: &[DiagnosticPointer],
+        absolute: bool,
+    ) -> Result<DiagnosticPointer, QmpError> {
+        let label = if absolute { "absolute" } else { "relative" };
+        let mut choices = pointers
+            .iter()
+            .filter(|pointer| pointer.absolute == absolute);
+        let selected = choices
+            .next()
+            .copied()
+            .ok_or_else(|| QmpError::Protocol(format!("no {label} pointer is available")))?;
+        if choices.next().is_some() {
+            return Err(QmpError::Protocol(format!(
+                "multiple {label} pointers require an explicit routing decision"
+            )));
+        }
+        Ok(selected)
+    }
+
+
+    /// Read a strict pointer inventory with unique non-negative indices and one current pointer.
+    fn diagnostic_pointers(&mut self) -> Result<Vec<DiagnosticPointer>, QmpError> {
+        let value = self.execute("query-mice", None)?;
+        let entries = value
+            .as_array()
+            .ok_or_else(|| QmpError::Protocol("query-mice did not return an array".into()))?;
+        let mut pointers: Vec<DiagnosticPointer> = Vec::new();
+        for item in entries {
+            let index = item
+                .get("index")
+                .and_then(Value::as_i64)
+                .and_then(|n| i32::try_from(n).ok())
+                .filter(|n| *n >= 0)
+                .ok_or_else(|| QmpError::Protocol("query-mice has an invalid index".into()))?;
+            let absolute = item
+                .get("absolute")
+                .and_then(Value::as_bool)
+                .ok_or_else(|| QmpError::Protocol("query-mice has no absolute flag".into()))?;
+            let current = item
+                .get("current")
+                .and_then(Value::as_bool)
+                .ok_or_else(|| QmpError::Protocol("query-mice has no current flag".into()))?;
+            if pointers.iter().any(|p| p.index == index) {
+                return Err(QmpError::Protocol(
+                    "query-mice has duplicate indices".into(),
+                ));
+            }
+            pointers.push(DiagnosticPointer {
+                index,
+                absolute,
+                current,
+            });
+        }
+        if pointers.iter().filter(|p| p.current).count() != 1 {
+            return Err(QmpError::Protocol(
+                "query-mice must identify exactly one current pointer".into(),
+            ));
+        }
+        Ok(pointers)
+    }
+
+
+    /// Select one freshly validated mouse index, guarding each boundary and verifying the outcome.
+    fn diagnostic_select_pointer<F: FnMut() -> bool>(
+        &mut self,
+        choice: DiagnosticPointer,
+        permitted: &mut F,
+    ) -> Result<(), QmpError> {
+        Self::diagnostic_wait(Duration::ZERO, permitted)?;
+        let pointers = self.diagnostic_pointers()?;
+        Self::diagnostic_wait(Duration::ZERO, permitted)?;
+        if !pointers
+            .iter()
+            .any(|p| p.index == choice.index && p.absolute == choice.absolute)
+        {
+            return Err(QmpError::Protocol(
+                "the selected pointer identity is no longer available".into(),
+            ));
+        }
+        let answer = self.execute(
+            "human-monitor-command",
+            Some(json!({"command-line":format!("mouse_set {}",choice.index)})),
+        )?;
+        if answer.as_str() != Some("") {
+            return Err(QmpError::Command(format!(
+                "mouse_set returned unexpected output: {answer}"
+            )));
+        }
+        Self::diagnostic_wait(Duration::ZERO, permitted)?;
+        let pointers = self.diagnostic_pointers()?;
+        Self::diagnostic_wait(Duration::ZERO, permitted)?;
+        if !pointers
+            .iter()
+            .any(|p| p.index == choice.index && p.absolute == choice.absolute && p.current)
+        {
+            return Err(QmpError::Protocol(
+                "mouse_set did not activate the requested pointer".into(),
+            ));
+        }
+        Ok(())
+    }
+
+
+    /// Reselect only for release after uncertain diagnostic input; never replay a press or motion.
+    ///
+    /// Old-stream selection/release are best effort without waiting for outstanding
+    /// gesture ACKs. The fresh stream validates/reselects the captured target index
+    /// before an acknowledged release. STOP does not restore the original pointer.
+    fn recover_diagnostic_release(
+        &mut self,
+        selected: DiagnosticPointer,
+        up: Value,
+        action: QmpError,
+    ) -> QmpError {
+        let _ = self.send_request(
+            "human-monitor-command",
+            Some(json!({"command-line":format!("mouse_set {}",selected.index)})),
+        );
+        let _ = self.send_request("input-send-event", Some(up.clone()));
+        self.usable = false;
+        let _ = self.writer.shutdown(Shutdown::Both);
+        let _ = self.reader.get_ref().shutdown(Shutdown::Both);
+        let recovery = Self::connect_observed(
+            &self.socket_path,
+            self.config,
+            self.observer.as_ref().map(|observer| observer.0.clone()),
+            QmpWireConnection::ReleaseRecovery,
+        )
+        .and_then(|mut fresh| {
+            fresh.diagnostic_select_pointer(selected, &mut || true)?;
+            fresh.execute("input-send-event", Some(up)).map(|_| ())
+        });
+        match recovery {
+            Ok(()) => action,
+            Err(recovery) => QmpError::InputRecovery {
+                action: Box::new(action),
+                recovery: Box::new(recovery),
+            },
+        }
+    }
+
+
+    /// Send one guarded left down/up pair at the current pointer without moving it.
+    ///
+    /// The caller owns fresh position, scene and effect authority. The prompt
+    /// predicate is checked before down and around the configured mouse hold;
+    /// this method never supplies a destination, waits for later game policy,
+    /// captures a frame or repeats a down. Replies are collected only after up.
+    ///
+    /// # Errors
+    /// An unusable connection or initial revocation fails before input. Any possible
+    /// post-down failure uses the existing old/fresh release-only recovery and
+    /// invalidates this connection. Recovery release is not rollback.
+    pub fn click_current_guarded<F: FnMut() -> bool>(
+        &mut self,
+        mut permitted: F,
+    ) -> Result<(), QmpError> {
+        if !self.usable {
+            return Err(QmpError::Protocol(
+                "the QMP connection is no longer usable".into(),
+            ));
+        }
+        if !permitted() {
+            return Err(QmpError::Protocol(
+                "diagnostic input authority interrupted".into(),
+            ));
+        }
+        let up = json!({"events":[{"type":"btn","data":{"button":"left","down":false}}]});
+        let click = (|| {
+            let down = self.send_request(
+                "input-send-event",
+                Some(json!({"events":[{"type":"btn","data":{"button":"left","down":true}}]})),
+            )?;
+            Self::diagnostic_wait(self.config.mouse_hold, &mut permitted)?;
+            let released = self.send_request("input-send-event", Some(up.clone()))?;
+            self.await_responses(&[down, released]).map(|_| ())
+        })();
+        click.map_err(|error| self.recover_release(up, error))
+    }
+
+
+    /// Check diagnostic authority around one explicitly requested blocking delay.
+    fn diagnostic_wait<F: FnMut() -> bool>(
+        duration: Duration,
+        permitted: &mut F,
+    ) -> Result<(), QmpError> {
+        if !permitted() {
+            return Err(QmpError::Protocol(
+                "diagnostic input authority interrupted".into(),
+            ));
+        }
+        thread::sleep(duration);
+        if !permitted() {
+            return Err(QmpError::Protocol(
+                "diagnostic input authority interrupted".into(),
+            ));
+        }
+        Ok(())
+    }
+
+
     /// Converts a guest pixel position and sends one absolute left click
     /// using the caller-selected button-down duration.
     pub fn click_with_hold(
@@ -518,10 +1248,52 @@ impl QmpClient {
             packet["arguments"] = arguments;
         }
 
-        serde_json::to_writer(&mut self.writer, &packet)?;
-        self.writer.write_all(b"\n")?;
-        self.writer.flush()?;
-        Ok(id)
+        let wire = if self.observer.is_some() {
+            Some(serde_json::to_string(&packet)?)
+        } else {
+            None
+        };
+        if let Some(json) = wire.as_deref() {
+            self.observe_wire(QmpWireEvent::Attempted {
+                connection: self.connection,
+                id,
+                json,
+            });
+        }
+        let mut stage = QmpWireStage::JsonWrite;
+        let result = (|| -> Result<u64, QmpError> {
+            // Serialize the same immutable Value through the original socket writer,
+            // retaining its JSON-versus-I/O error classification and framing.
+            serde_json::to_writer(&mut self.writer, &packet)?;
+            stage = QmpWireStage::NewlineWrite;
+            self.writer.write_all(b"\n")?;
+            stage = QmpWireStage::Flush;
+            self.writer.flush()?;
+            Ok(id)
+        })();
+        if wire.is_some() {
+            self.observe_wire(match &result {
+                Ok(_) => QmpWireEvent::Flushed {
+                    connection: self.connection,
+                    id,
+                },
+                Err(error) => QmpWireEvent::Failed {
+                    connection: self.connection,
+                    id,
+                    stage,
+                    error,
+                },
+            });
+        }
+        result
+    }
+
+
+    /// Contain an unwinding observer panic without replacing transport errors or recovery.
+    fn observe_wire(&self, event: QmpWireEvent<'_>) {
+        if let Some(observer) = &self.observer {
+            let _ = catch_unwind(AssertUnwindSafe(|| observer.0.observe(event)));
+        }
     }
 
 
@@ -615,12 +1387,17 @@ impl QmpClient {
         let _ = self.writer.shutdown(Shutdown::Both);
         let _ = self.reader.get_ref().shutdown(Shutdown::Both);
 
-        let recovery =
-            Self::connect_with_config(&self.socket_path, self.config).and_then(|mut fresh| {
-                fresh
-                    .execute("input-send-event", Some(up_arguments))
-                    .map(|_| ())
-            });
+        let recovery = Self::connect_observed(
+            &self.socket_path,
+            self.config,
+            self.observer.as_ref().map(|observer| observer.0.clone()),
+            QmpWireConnection::ReleaseRecovery,
+        )
+        .and_then(|mut fresh| {
+            fresh
+                .execute("input-send-event", Some(up_arguments))
+                .map(|_| ())
+        });
 
 
         match recovery {
@@ -689,6 +1466,18 @@ mod tests {
 
 
     mod drag_tests;
+
+
+    mod diagnostic_tests;
+
+
+    mod double_absolute_tests;
+
+
+    mod path_absolute_tests;
+
+
+    mod relative_tests;
 
 
     /// Process-local suffix used to keep concurrent mock socket paths distinct.

@@ -1,7 +1,8 @@
 //! Independent physical replay, without consulting search mutation or canonical keys.
 //!
-//! Every original identity is conserved after each move. Only an independently
-//! checked complete52-card foundation endpoint produces a successful summary.
+//! Every original identity is conserved after each move. Complete verification
+//! requires all52 foundations; explicit prefix verification requires a fully
+//! checked physical endpoint with no outstanding deterministic automatic move.
 
 use super::rules::{Pile, RecordedMove};
 use super::{BoardState, FOUNDATION_SUITS, InitialDeal};
@@ -29,7 +30,7 @@ pub enum ReplayFailure {
     /// Full-deck conservation or checked storage failed.
     #[error("card inventory or storage invariant failed")]
     Inventory,
-    /// Unbanked cards remain at the endpoint.
+    /// Required complete endpoint or automatic closure is not reached.
     #[error("route is incomplete")]
     Incomplete,
     /// Cooperative cancellation between bounded transfers.
@@ -47,6 +48,18 @@ pub struct ReplaySummary {
     pub automatic: usize,
     /// Canonical C,D,H,S foundation progress, all thirteen on success.
     pub foundations: [u8; 4],
+}
+
+
+/// Independently checked prefix with every physical endpoint identity retained.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct PrefixReplaySummary {
+    /// Deliberate cost-one transfers.
+    pub deliberate: usize,
+    /// Separately recorded cost-zero automatic transfers.
+    pub automatic: usize,
+    /// Conserved complete inventory in physical PLAY/CELL and canonical SUIT order.
+    pub endpoint: BoardState,
 }
 
 
@@ -72,6 +85,23 @@ pub fn verify_with_control(
 }
 
 
+/// Independently verify a prefix, including its final forced-automatic closure.
+///
+/// A successful summary proves legality and conservation, never maximum score,
+/// a challenge objective, live input authority or full-board completion.
+///
+/// # Errors
+/// Returns the first illegal transfer/tag, inventory failure, cancellation or
+/// endpoint with a still-required deterministic automatic transfer.
+pub fn verify_prefix_with_control(
+    deal: &InitialDeal,
+    moves: &[RecordedMove],
+    cancel: &AtomicBool,
+) -> Result<PrefixReplaySummary, ReplayError> {
+    verify_prefix_with_checkpoint(deal, moves, cancel, None)
+}
+
+
 /// Replay each bounded transfer with the planner's same cooperative pause gate.
 pub(super) fn verify_with_checkpoint(
     deal: &InitialDeal,
@@ -79,6 +109,58 @@ pub(super) fn verify_with_checkpoint(
     cancel: &AtomicBool,
     checkpoint: Option<&dyn Fn() -> std::time::Duration>,
 ) -> Result<ReplaySummary, ReplayError> {
+    let summary = replay_to_endpoint(deal, moves, cancel, checkpoint)?;
+    if summary.endpoint.foundations != [13; 4]
+        || summary.endpoint.cells != [None; 4]
+        || summary.endpoint.cascades.iter().any(|c| !c.is_empty())
+    {
+        return Err(ReplayError {
+            step: moves.len(),
+            kind: ReplayFailure::Incomplete,
+        });
+    }
+    Ok(ReplaySummary {
+        deliberate: summary.deliberate,
+        automatic: summary.automatic,
+        foundations: summary.endpoint.foundations,
+    })
+}
+
+
+/// Replay a prefix with the same pause gate and a checked automatic endpoint.
+pub(super) fn verify_prefix_with_checkpoint(
+    deal: &InitialDeal,
+    moves: &[RecordedMove],
+    cancel: &AtomicBool,
+    checkpoint: Option<&dyn Fn() -> std::time::Duration>,
+) -> Result<PrefixReplaySummary, ReplayError> {
+    let summary = replay_to_endpoint(deal, moves, cancel, checkpoint)?;
+    if let Some(check) = checkpoint {
+        let _ = check();
+    }
+    if cancel.load(Ordering::Acquire) {
+        return Err(ReplayError {
+            step: moves.len(),
+            kind: ReplayFailure::Cancelled,
+        });
+    }
+    if automatic_move(&summary.endpoint).is_some() {
+        return Err(ReplayError {
+            step: moves.len(),
+            kind: ReplayFailure::Incomplete,
+        });
+    }
+    Ok(summary)
+}
+
+
+/// Apply the shared independent transfer checker without imposing full clearance.
+fn replay_to_endpoint(
+    deal: &InitialDeal,
+    moves: &[RecordedMove],
+    cancel: &AtomicBool,
+    checkpoint: Option<&dyn Fn() -> std::time::Duration>,
+) -> Result<PrefixReplaySummary, ReplayError> {
     let mut board = deal.board().clone();
     let mut deliberate = 0_usize;
     let mut automatic = 0_usize;
@@ -193,19 +275,10 @@ pub(super) fn verify_with_checkpoint(
             kind: ReplayFailure::Cancelled,
         });
     }
-    if board.foundations != [13; 4]
-        || board.cells != [None; 4]
-        || board.cascades.iter().any(|c| !c.is_empty())
-    {
-        return Err(ReplayError {
-            step: moves.len(),
-            kind: ReplayFailure::Incomplete,
-        });
-    }
-    Ok(ReplaySummary {
+    Ok(PrefixReplaySummary {
         deliberate,
         automatic,
-        foundations: board.foundations,
+        endpoint: board,
     })
 }
 

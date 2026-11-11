@@ -33,6 +33,133 @@ fn automatic_deal() -> InitialDeal {
 }
 
 
+/// Expose four aces but bury each two, yielding a small closed automatic prefix.
+fn four_ace_prefix_deal() -> InitialDeal {
+    let original = automatic_deal();
+    let columns = std::array::from_fn(|index| {
+        let mut cards = original.board().cascades()[index]
+            .iter()
+            .collect::<Vec<_>>();
+        if index >= 4 {
+            cards.reverse();
+        }
+        CascadeStack::from_cards(cards).unwrap()
+    });
+    InitialDeal::new(
+        BoardState::new(columns, [None; 4], [0; 4]).unwrap(),
+        Metadata::new("four-aces", "synthetic", "unit").unwrap(),
+    )
+    .unwrap()
+}
+
+
+/// Prefix replay retains a full physical endpoint and rejects missing automatic closure.
+#[test]
+fn freecell_315_prefix_replay_conserves_inventory_and_rejects_unknown_or_open_prefix() {
+    let deal = four_ace_prefix_deal();
+    let before = deal.clone();
+    let mut position = freecell::rules::Position::initial(&deal);
+    let mut moves = Vec::new();
+    while let Some(action) = position.automatic() {
+        position = position.apply(action).unwrap();
+        moves.push(action);
+    }
+    assert_eq!(moves.len(), 4);
+    let summary =
+        freecell::replay::verify_prefix_with_control(&deal, &moves, &AtomicBool::new(false))
+            .unwrap();
+    assert_eq!((summary.deliberate, summary.automatic), (0, 4));
+    assert_eq!(summary.endpoint.foundations(), &[1; 4]);
+    let columns = std::array::from_fn(|index| {
+        let mut stack = deal.board().cascades()[index].clone();
+        if index < 4 {
+            stack.pop().unwrap();
+        }
+        stack
+    });
+    assert_eq!(
+        summary.endpoint,
+        BoardState::new(columns, [None; 4], [1; 4]).unwrap()
+    );
+    assert_eq!(deal, before);
+    assert_eq!(
+        freecell::replay::verify(&deal, &moves).unwrap_err().kind,
+        freecell::replay::ReplayFailure::Incomplete
+    );
+    for prefix in [&moves[..0], &moves[..3]] {
+        assert_eq!(
+            freecell::replay::verify_prefix_with_control(&deal, prefix, &AtomicBool::new(false),)
+                .unwrap_err()
+                .kind,
+            freecell::replay::ReplayFailure::Incomplete
+        );
+    }
+    for mutation in 0..3 {
+        let mut changed = moves.clone();
+        match mutation {
+            0 => changed[0].card_id = u8::MAX,
+            1 => changed[0].is_auto = false,
+            _ => changed[1] = changed[0],
+        }
+        assert_eq!(
+            freecell::replay::verify_prefix_with_control(&deal, &changed, &AtomicBool::new(false),)
+                .unwrap_err()
+                .kind,
+            freecell::replay::ReplayFailure::Illegal
+        );
+    }
+    assert_eq!(
+        freecell::replay::verify_prefix_with_control(&deal, &moves, &AtomicBool::new(true),)
+            .unwrap_err()
+            .kind,
+        freecell::replay::ReplayFailure::Cancelled
+    );
+}
+
+
+/// The additive planner preserves full-route preference and cancels during final replay.
+#[test]
+fn freecell_315_complete_preference_replays_and_cancellation_has_no_prefix() {
+    use std::{cell::Cell, sync::atomic::Ordering, time::Duration};
+    for cancel_replay in [false, true] {
+        let deal = automatic_deal();
+        let cancel = AtomicBool::new(false);
+        let finished = Cell::new(false);
+        let mut progress = |value: freecell::search::Progress| {
+            if value.search.finished {
+                finished.set(true);
+            }
+        };
+        let checkpoint = || {
+            if cancel_replay && finished.get() {
+                cancel.store(true, Ordering::Release);
+            }
+            Duration::ZERO
+        };
+        let result = freecell::search::solve_best_effort_with_control(
+            &deal,
+            &cancel,
+            Some(&mut progress),
+            Some(&checkpoint),
+        );
+        if cancel_replay {
+            assert!(matches!(
+                result,
+                freecell::search::BestEffortOutcome::Cancelled(_)
+            ));
+        } else {
+            let freecell::search::BestEffortOutcome::Solved { moves, replay, .. } = result else {
+                panic!("complete route must retain preference")
+            };
+            assert_eq!(
+                (moves.len(), replay.automatic, replay.foundations),
+                (52, 52, [13; 4])
+            );
+        }
+    }
+}
+
+
 /// Public solve produces only a separately replayed full route and preserves input.
 #[test]
 fn complete_automatic_route_and_tampering() {
