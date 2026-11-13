@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.16.3 — host-qualified metadata patch
+
+Requested paired patch release for application 3.1.20. Rust sources and public APIs are byte-preserved. Application controls use the existing bounded path/Duration transport. Feature defaults, dependencies, MSRV and edition are preserved.
+
+All 50 fresh host gates passed, including 1,911 application, 381 library and 80 console tests. Complete suites have zero failed, ignored, measured or filtered tests. Charlie reported successful 3.1.19 guest playback at 100 ms. Fresh Windows acceptance of this styled 3.1.20 build remains pending.
+
+
+## 0.16.2 — bounded interval path correction (host-qualified)
+
+Add `QmpClient::diagnostic_drag_path_with_interval` for exactly three or four validated caller-supplied held ABS points and an explicit Duration. The corrected application supplies source-up45, original-native-endpoint midpoint and exact destination with half-second or zero intervals. Full path preflight, source acknowledgement, fresh routing and targeted release recovery govern delivery. All 51 fresh paired host gates passed with 1,896 application, 381 library and 80 console tests. The full suites report zero failed, ignored, measured or filtered tests. See [contract](../qmp-qemu-socket/docs/FreeCell-Playback-3.1.17.md) and [verification](../qmp-qemu-socket/docs/Verification-3.1.17.md).
+
+
 ## 0.16.1 — source-up and midpoint path regression (host-qualified)
 
 Exercise the existing bounded four-point ABS API with source-up45, a caller-supplied native endpoint midpoint, destination-up45 and exact destination. Extend native bounds, quantised alias and timing coverage. All 51 fresh paired host gates passed with 1,893 application, 366 library and 80 console tests. The full suites report zero failed, ignored, measured or filtered tests. See [contract](../qmp-qemu-socket/docs/FreeCell-Source-Midpoint-3.1.16.md) and [verification](../qmp-qemu-socket/docs/Verification-3.1.16.md).

@@ -661,6 +661,59 @@ impl QmpClient {
     }
 
 
+    /// Deliver one absolute diagnostic through exactly three or four supplied held points.
+    ///
+    /// Validate the point count, source and every native held point before
+    /// checking authority or performing I/O. The final point is the exact release
+    /// endpoint and must map differently from the source. Intermediate points may
+    /// repeat each other or either endpoint; each retains its own ABS request.
+    /// The caller owns the path geometry and diagnostic meaning.
+    ///
+    /// Freshly select and verify the unique absolute pointer, position the source
+    /// and await its ACK, then wait `interval` before the fresh routing check and
+    /// DOWN. Send DOWN, every held ABS in slice order and UP separately, waiting
+    /// the same minimum interval before each subsequent input. Three held points
+    /// produce six input packets and five waits; four produce seven and six.
+    /// A zero interval preserves all authority checks, routing and ACK ordering.
+    /// Collect held-phase replies only after UP, with no further wait after UP.
+    /// Socket I/O and synchronous observation can extend the selected intervals.
+    /// Restore the original pointer only after confirmed UP while still permitted.
+    ///
+    /// # Errors
+    /// Counts other than three or four, invalid native coordinates and mapped-alias
+    /// source/final endpoints fail before authority checks or I/O. Ambiguous or
+    /// changed routing and revoked authority fail before pressing where possible.
+    /// Possible post-DOWN failures preserve their cause and reselect only the
+    /// captured pointer for old/fresh safety UP; DOWN and motion are never replayed.
+    /// STOP may leave that pointer selected. Release is never rollback.
+    pub fn diagnostic_drag_path_with_interval<F>(
+        &mut self,
+        source: PixelPoint,
+        held_points: &[PixelPoint],
+        frame: (u32, u32),
+        interval: Duration,
+        mut permitted: F,
+    ) -> Result<(), QmpError>
+    where
+        F: FnMut() -> bool,
+    {
+        if !matches!(held_points.len(), 3 | 4) {
+            return Err(QmpError::Protocol(
+                "diagnostic absolute path requires exactly three or four held points".into(),
+            ));
+        }
+        let from = Self::diagnostic_absolute_motion(source, frame)?;
+        let movements = held_points
+            .iter()
+            .map(|&point| Self::diagnostic_absolute_motion(point, frame))
+            .collect::<Result<Vec<_>, _>>()?;
+        if movements.last() == Some(&from) {
+            return Err(QmpError::Protocol("drag endpoints must differ".into()));
+        }
+        self.diagnostic_held_input(from, movements, true, interval, &mut permitted)
+    }
+
+
     /// Validate the complete bounded path before using the common release-safe sequence.
     fn diagnostic_drag_path_with_delay<F: FnMut() -> bool>(
         &mut self,
@@ -1475,6 +1528,9 @@ mod tests {
 
 
     mod path_absolute_tests;
+
+
+    mod path_interval_tests;
 
 
     mod relative_tests;
