@@ -8,10 +8,8 @@
 
 use super::*;
 
-
 #[cfg(test)]
 mod tests;
-
 
 /// Pure problem with an additional deterministic, state-local fallback score.
 ///
@@ -22,7 +20,6 @@ pub trait BestEffortProblem: SearchProblem {
     fn score(&self, state: Self::State) -> u32;
 }
 
-
 /// Evidence supporting a scored prefix when a full-goal route was not returned.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum PartialProof {
@@ -31,7 +28,6 @@ pub enum PartialProof {
     /// Best discovered prefix only; the named aggregate resource bound intervened.
     Bounded(SearchStop),
 }
-
 
 /// Full-goal, explicitly partial, or unusable outcome from one combined budget.
 #[derive(Debug, Eq, PartialEq)]
@@ -65,7 +61,6 @@ pub enum BestEffortOutcome<A> {
     },
 }
 
-
 /// Owned best prefix, reconstructed before a possible deadline rather than afterwards.
 struct Candidate<A> {
     /// Prefix actions; retained until a replacement has been completely checked.
@@ -78,7 +73,6 @@ struct Candidate<A> {
     label: PathLabel,
 }
 
-
 /// Add counters while retaining a single invocation clock and peak frontier.
 fn cumulative(previous: SearchStats, current: SearchStats) -> SearchStats {
     SearchStats {
@@ -89,7 +83,6 @@ fn cumulative(previous: SearchStats, current: SearchStats) -> SearchStats {
         elapsed: current.elapsed,
     }
 }
-
 
 /// Check STOP and deadline around a due cumulative observer notification.
 fn poll<S: Copy + Eq + Hash, A: Copy>(
@@ -104,8 +97,7 @@ fn poll<S: Copy + Eq + Hash, A: Copy>(
     Ok(())
 }
 
-
-/// Ordinary resource cutoffs may return an already checked prefix.
+/// Ordinary resource cutoffs or soft-yield interrupts may return an already checked prefix.
 fn permits_prefix(reason: SearchStop) -> bool {
     matches!(
         reason,
@@ -113,9 +105,9 @@ fn permits_prefix(reason: SearchStop) -> bool {
             | SearchStop::ExpansionLimit
             | SearchStop::MemoryLimit
             | SearchStop::TimeLimit
+            | SearchStop::Interrupted
     )
 }
-
 
 /// Reconstruct an improving successor before pruning or later resource exhaustion.
 ///
@@ -178,7 +170,6 @@ fn consider<P: BestEffortProblem>(
         .max_memory_bytes = memory_allowance.saturating_sub(bytes);
     Ok(())
 }
-
 
 /// Run one phase; absent options disable full-goal pruning and heuristic guidance.
 ///
@@ -269,6 +260,7 @@ fn phase<P: BestEffortProblem>(
                 candidate,
                 memory_allowance,
             )?;
+            progress.record_score(candidate.score);
             if guided && problem.impossible(next) {
                 continue;
             }
@@ -291,7 +283,6 @@ fn phase<P: BestEffortProblem>(
     }
 }
 
-
 /// Convert only safe cutoffs into a prefix, checking STOP again at the boundary.
 fn finish<A>(
     candidate: Candidate<A>,
@@ -299,7 +290,7 @@ fn finish<A>(
     reason: Option<SearchStop>,
     cancel: &AtomicBool,
 ) -> BestEffortOutcome<A> {
-    let reason = if cancel.load(AtomicOrdering::Relaxed) {
+    let reason = if cancel.load(AtomicOrdering::Acquire) {
         Some(SearchStop::Cancelled)
     } else {
         reason
@@ -321,7 +312,6 @@ fn finish<A>(
         stats,
     }
 }
-
 
 /// Seek a full goal first, then maximise a state score under one combined budget.
 ///
@@ -351,7 +341,6 @@ pub fn solve_best_effort<P: BestEffortProblem>(
     solve_best_effort_with_control(problem, limits, cancel, options, observer, None)
 }
 
-
 /// Seek a full goal and scored fallback with a cooperative caller checkpoint.
 ///
 /// Search, partial-proof and cumulative-reporting contracts match
@@ -370,9 +359,59 @@ pub fn solve_best_effort_with_control<P: BestEffortProblem>(
     observer: Option<&mut dyn FnMut(SearchProgress)>,
     checkpoint: Option<&dyn Fn() -> Duration>,
 ) -> BestEffortOutcome<P::Action> {
+    solve_best_effort_inner(
+        problem,
+        limits,
+        cancel,
+        None,
+        options,
+        ProgressReporter::new(observer),
+        checkpoint,
+    )
+}
+
+/// Seek a full goal and scored fallback with soft-yield, live best-score and hard cancellation.
+///
+/// Search, partial-proof and cumulative-reporting contracts match
+/// [`solve_best_effort_with_control`]. When `control.yield_best` is set while `control.cancel`
+/// remains false, both Phase 1 and Phase 2 stop promptly (without entering Phase 2 if stopped
+/// during Phase 1), release retained engine collections immediately and return the best
+/// checked prefix with [`PartialProof::Bounded`] of [`SearchStop::Interrupted`]. Hard
+/// cancellation (`control.cancel`) always discards any candidate and returns
+/// [`SearchStop::Cancelled`].
+///
+/// # Panics
+/// Caller problem, observer and checkpoint panics propagate without final reporting.
+pub fn solve_best_effort_controlled<P: BestEffortProblem>(
+    problem: &P,
+    limits: SearchLimits,
+    options: SearchOptions,
+    control: BestEffortControl<'_>,
+) -> BestEffortOutcome<P::Action> {
+    solve_best_effort_inner(
+        problem,
+        limits,
+        control.cancel,
+        control.yield_best,
+        options,
+        ProgressReporter::best_effort(control.progress),
+        control.checkpoint,
+    )
+}
+
+/// Shared two-phase best-effort runner supporting legacy and controlled observers.
+fn solve_best_effort_inner<P: BestEffortProblem>(
+    problem: &P,
+    limits: SearchLimits,
+    cancel: &AtomicBool,
+    yield_best: Option<&AtomicBool>,
+    options: SearchOptions,
+    mut progress: ProgressReporter<'_>,
+    checkpoint: Option<&dyn Fn() -> Duration>,
+) -> BestEffortOutcome<P::Action> {
     let mut engine = Engine::new(limits, cancel);
+    engine.yield_best = yield_best;
     engine.checkpoint = checkpoint;
-    let mut progress = ProgressReporter::new(observer);
     progress.report(engine.stats(), false);
     let mut candidate = Candidate {
         actions: Vec::new(),
@@ -380,100 +419,104 @@ pub fn solve_best_effort_with_control<P: BestEffortProblem>(
         goal: false,
         label: PathLabel::default(),
     };
-    let outcome = if let Err(reason) = engine.poll() {
-        BestEffortOutcome::Stopped {
-            reason,
-            stats: engine.stats(),
+    let outcome = match engine.poll() {
+        Err(reason) => {
+            let stats = engine.stats();
+            drop(engine);
+            if reason == SearchStop::Interrupted && !cancel.load(AtomicOrdering::Acquire) {
+                finish(candidate, stats, Some(reason), cancel)
+            } else {
+                BestEffortOutcome::Stopped { reason, stats }
+            }
         }
-    } else {
-        candidate.score = problem.score(problem.initial());
-        let first = phase(
-            problem,
-            &mut engine,
-            Some(options),
-            SearchStats::default(),
-            &mut progress,
-            &mut candidate,
-            limits.max_memory_bytes,
-        );
-        match first {
-            Ok(Some(actions)) => BestEffortOutcome::Solved {
-                actions,
-                minimum_proven: options.method == SearchMethod::Dijkstra
-                    || options.heuristic_weight == NonZeroU32::MIN,
-                stats: engine.stats(),
-            },
-            Ok(None) if options.method == SearchMethod::Dijkstra => {
-                finish(candidate, engine.stats(), None, cancel)
-            }
-            Err(reason) if !permits_prefix(reason) => {
-                finish(candidate, engine.stats(), Some(reason), cancel)
-            }
-            first => {
-                let previous = engine.stats();
-                let mut remaining = limits;
-                remaining.max_states = limits.max_states.saturating_sub(previous.states);
-                remaining.max_expansions = limits.max_expansions.saturating_sub(previous.expanded);
-                remaining.max_memory_bytes = limits.max_memory_bytes.saturating_sub(
-                    candidate
-                        .actions
-                        .capacity()
-                        .saturating_mul(size_of::<P::Action>()),
-                );
-                let started = engine.started;
-                let paused = engine.paused.get();
-                drop(engine);
-                let mut fallback = Engine::new(remaining, cancel);
-                fallback.started = started;
-                fallback.checkpoint = checkpoint;
-                fallback.paused.set(paused);
-                let first_reason = first.err();
-                if let Err(reason) = fallback.poll() {
-                    finish(
-                        candidate,
-                        cumulative(previous, fallback.stats()),
-                        Some(reason),
-                        cancel,
-                    )
-                } else if remaining.max_states == 0 || remaining.max_expansions == 0 {
-                    let reason = first_reason.unwrap_or(if remaining.max_states == 0 {
-                        SearchStop::StateLimit
+        Ok(()) => {
+            candidate.score = problem.score(problem.initial());
+            progress.record_score(candidate.score);
+            let first = phase(
+                problem,
+                &mut engine,
+                Some(options),
+                SearchStats::default(),
+                &mut progress,
+                &mut candidate,
+                limits.max_memory_bytes,
+            );
+            match first {
+                Ok(Some(actions)) => {
+                    let stats = engine.stats();
+                    drop(engine);
+                    BestEffortOutcome::Solved {
+                        actions,
+                        minimum_proven: options.method == SearchMethod::Dijkstra
+                            || options.heuristic_weight == NonZeroU32::MIN,
+                        stats,
+                    }
+                }
+                Ok(None) if options.method == SearchMethod::Dijkstra => {
+                    let stats = engine.stats();
+                    drop(engine);
+                    finish(candidate, stats, None, cancel)
+                }
+                Err(reason) if !permits_prefix(reason) || reason == SearchStop::Interrupted => {
+                    let stats = engine.stats();
+                    drop(engine);
+                    finish(candidate, stats, Some(reason), cancel)
+                }
+                first => {
+                    let previous = engine.stats();
+                    let mut remaining = limits;
+                    remaining.max_states = limits.max_states.saturating_sub(previous.states);
+                    remaining.max_expansions =
+                        limits.max_expansions.saturating_sub(previous.expanded);
+                    remaining.max_memory_bytes = limits.max_memory_bytes.saturating_sub(
+                        candidate
+                            .actions
+                            .capacity()
+                            .saturating_mul(size_of::<P::Action>()),
+                    );
+                    let started = engine.started;
+                    let paused = engine.paused.get();
+                    drop(engine);
+                    let mut fallback = Engine::new(remaining, cancel);
+                    fallback.started = started;
+                    fallback.yield_best = yield_best;
+                    fallback.checkpoint = checkpoint;
+                    fallback.paused.set(paused);
+                    let first_reason = first.err();
+                    if let Err(reason) = fallback.poll() {
+                        let stats = cumulative(previous, fallback.stats());
+                        drop(fallback);
+                        finish(candidate, stats, Some(reason), cancel)
+                    } else if remaining.max_states == 0 || remaining.max_expansions == 0 {
+                        let reason = first_reason.unwrap_or(if remaining.max_states == 0 {
+                            SearchStop::StateLimit
+                        } else {
+                            SearchStop::ExpansionLimit
+                        });
+                        let stats = cumulative(previous, fallback.stats());
+                        drop(fallback);
+                        finish(candidate, stats, Some(reason), cancel)
                     } else {
-                        SearchStop::ExpansionLimit
-                    });
-                    finish(
-                        candidate,
-                        cumulative(previous, fallback.stats()),
-                        Some(reason),
-                        cancel,
-                    )
-                } else {
-                    match phase(
-                        problem,
-                        &mut fallback,
-                        None,
-                        previous,
-                        &mut progress,
-                        &mut candidate,
-                        limits.max_memory_bytes,
-                    ) {
-                        Ok(Some(actions)) => BestEffortOutcome::Solved {
-                            actions,
-                            minimum_proven: true,
-                            stats: cumulative(previous, fallback.stats()),
-                        },
-                        Ok(None) => finish(
-                            candidate,
-                            cumulative(previous, fallback.stats()),
+                        let fallback_result = phase(
+                            problem,
+                            &mut fallback,
                             None,
-                            cancel,
-                        ),
-                        Err(reason) => finish(
-                            candidate,
-                            cumulative(previous, fallback.stats()),
-                            Some(reason),
-                            cancel,
-                        ),
+                            previous,
+                            &mut progress,
+                            &mut candidate,
+                            limits.max_memory_bytes,
+                        );
+                        let stats = cumulative(previous, fallback.stats());
+                        drop(fallback);
+                        match fallback_result {
+                            Ok(Some(actions)) => BestEffortOutcome::Solved {
+                                actions,
+                                minimum_proven: true,
+                                stats,
+                            },
+                            Ok(None) => finish(candidate, stats, None, cancel),
+                            Err(reason) => finish(candidate, stats, Some(reason), cancel),
+                        }
                     }
                 }
             }
@@ -485,7 +528,7 @@ pub fn solve_best_effort_with_control<P: BestEffortProblem>(
         | BestEffortOutcome::Stopped { stats, .. } => *stats,
     };
     progress.report(stats, true);
-    if cancel.load(AtomicOrdering::Relaxed) {
+    if cancel.load(AtomicOrdering::Acquire) {
         BestEffortOutcome::Stopped {
             reason: SearchStop::Cancelled,
             stats,

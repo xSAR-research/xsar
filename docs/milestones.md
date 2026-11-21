@@ -1,5 +1,12 @@
 # Milestone Tracker & Baseline Receipt — xsar
 
+## 0.17.0 — domain-neutral controlled search and live best-score yield (21 November 2026)
+
+Added strictly domain-neutral search interruption, live best-score telemetry, and immediate arena release primitives in `src/search.rs` and `src/search/best_effort.rs` (`BestEffortProgress`, `BestEffortControl`, `SearchStop::Interrupted`, `solve_controlled`, `solve_best_effort_controlled`, `solve_guided_unlimited_best_effort_controlled`) with `5` new unit tests across `src/search/guided_fallback_tests.rs` and `src/search/best_effort/tests.rs` (including promotion of already-generated unexpanded `is_goal` states on soft `yield_best` and zero post-completion checkpoints). Hard `cancel` continues taking strict precedence over `yield_best`, Phase 1 `Interrupted` stops skip Phase 2 cleanly, `src/games/*` and all non-search modules remain untouched at `HEAD` (pre-existing `.gitignore` working-tree edits preserved), and feature defaults, dependencies, MSRV, and edition remain unchanged.
+
+All host gates passed on Beast: `rustfmt --edition 2024` check on the four modified `src/search*.rs` files (`--unstable-features --skip-children` on `src/search.rs`), `--no-default-features` (`14` passed), all `16` isolated feature check+test gates, `--all-features` strict Clippy (`--lib --bins` and `--all-targets`), private `cargo doc` (`-D warnings`), `--all-features` test suite (`381` unit/integration passed + `5` doc-tests passed; `1` pre-existing `#[ignore]`d manual path test `exported_deal_complete_route`), and `--release --all-features` build; paired application `3.5.0` passed all Tier 2 checks (`1,855` default / `2,040` full tests, `--release` SHA-256 `d20b340ceac803007b626616fa55eb595141dd731575876b62f16408d032b75b`). Fresh Windows 11 guest acceptance of `3.5.0` remains pending operator relaunch.
+
+
 ## 0.16.3 — host-qualified metadata patch
 
 Requested paired patch release for application 3.1.20. Rust sources and public APIs are byte-preserved. Application controls use the existing bounded path/Duration transport. Feature defaults, dependencies, MSRV and edition are preserved.

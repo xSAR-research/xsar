@@ -2,7 +2,6 @@
 
 use super::*;
 
-
 /// Finite deterministic graph with an optional goal and a sound root dead-end proof.
 struct Graph {
     /// Complete ordered edge list; action names are destination states.
@@ -15,24 +14,20 @@ struct Graph {
     impossible_root: bool,
 }
 
-
 impl SearchProblem for Graph {
     type State = u8;
     type Action = u8;
     type Successors = std::vec::IntoIter<(u8, u8)>;
-
 
     /// Use node zero as the unchanged graph origin.
     fn initial(&self) -> u8 {
         0
     }
 
-
     /// Only the explicit goal node is a full goal.
     fn is_goal(&self, state: u8) -> bool {
         self.goal == Some(state)
     }
-
 
     /// Generate each legal outgoing edge in its declared order.
     fn successors(&self, state: u8) -> Self::Successors {
@@ -44,13 +39,11 @@ impl SearchProblem for Graph {
             .into_iter()
     }
 
-
     /// Prove the whole no-goal graph impossible without ruling out useful scores.
     fn impossible(&self, state: u8) -> bool {
         self.impossible_root && self.goal.is_none() && state == 0
     }
 }
-
 
 impl BestEffortProblem for Graph {
     /// Missing score labels carry zero benefit.
@@ -62,7 +55,6 @@ impl BestEffortProblem for Graph {
     }
 }
 
-
 /// Two routes to the best score, including cycles and a longer equal-score prefix.
 fn no_goal(impossible_root: bool) -> Graph {
     Graph {
@@ -72,7 +64,6 @@ fn no_goal(impossible_root: bool) -> Graph {
         impossible_root,
     }
 }
-
 
 /// A sound full-clear pruning proof must not discard the maximum-removal prefix.
 #[test]
@@ -110,7 +101,6 @@ fn exhaustive_fallback_ignores_goal_pruning_and_minimises_equal_score_cost() {
     }
 }
 
-
 /// Full routes always outrank a higher-scoring non-goal, preserving exact proof.
 #[test]
 fn full_goal_precedes_fallback_score_and_keeps_exact_proof() {
@@ -139,7 +129,6 @@ fn full_goal_precedes_fallback_score_and_keeps_exact_proof() {
         other => panic!("expected full goal: {other:?}"),
     }
 }
-
 
 /// Phase changes cannot reset state/expansion budgets or emit multiple final snapshots.
 #[test]
@@ -184,7 +173,6 @@ fn shared_cutoff_returns_best_found_and_monotonic_cumulative_statistics() {
     );
 }
 
-
 /// Exhausted unpruned primary search already proves the fallback without spending a second budget.
 #[test]
 fn exhausted_primary_dijkstra_proves_maximum_without_repeating_the_graph() {
@@ -209,7 +197,6 @@ fn exhausted_primary_dijkstra_proves_maximum_without_repeating_the_graph() {
     );
 }
 
-
 /// A goal retained before a state cutoff is useful but has no popped-goal minimum proof.
 #[test]
 fn discovered_goal_at_resource_cutoff_never_claims_an_exact_minimum() {
@@ -227,7 +214,6 @@ fn discovered_goal_at_resource_cutoff_never_claims_an_exact_minimum() {
         matches!(solve_best_effort(&graph, limits, &AtomicBool::new(false), SearchOptions::default(), None), BestEffortOutcome::Solved { actions, minimum_proven: false, stats } if actions == [1] && stats.states == 1)
     );
 }
-
 
 /// Final observer cancellation withholds both solved and useful partial routes.
 #[test]
@@ -261,25 +247,21 @@ fn cancellation_from_final_progress_withholds_every_executable_outcome() {
     }
 }
 
-
 /// Initial-goal evaluation can revoke STOP before any executable result is exposed.
 struct RevokedInitialGoal<'a> {
     /// External cancellation flag, set from the caller-owned goal predicate.
     cancel: &'a AtomicBool,
 }
 
-
 impl SearchProblem for RevokedInitialGoal<'_> {
     type State = u8;
     type Action = u8;
     type Successors = std::iter::Empty<(u8, u8)>;
 
-
     /// Supply one complete initial state without allocation.
     fn initial(&self) -> u8 {
         0
     }
-
 
     /// Revoke at the initial-goal callback boundary before claiming success.
     fn is_goal(&self, _: u8) -> bool {
@@ -287,13 +269,11 @@ impl SearchProblem for RevokedInitialGoal<'_> {
         true
     }
 
-
     /// No expansion is required for this initially solved graph.
     fn successors(&self, _: u8) -> Self::Successors {
         std::iter::empty()
     }
 }
-
 
 impl BestEffortProblem for RevokedInitialGoal<'_> {
     /// No fallback benefit is relevant to the initially solved graph.
@@ -301,7 +281,6 @@ impl BestEffortProblem for RevokedInitialGoal<'_> {
         0
     }
 }
-
 
 /// Even an empty initial winning route is withheld after observed cancellation.
 #[test]
@@ -323,7 +302,6 @@ fn cancellation_during_initial_goal_evaluation_withholds_success() {
     ));
 }
 
-
 /// Fixture wrapper revokes STOP only after a scored legal prefix was discovered.
 struct Cancelling<'a> {
     /// Unchanged no-goal graph.
@@ -332,24 +310,20 @@ struct Cancelling<'a> {
     cancel: &'a AtomicBool,
 }
 
-
 impl SearchProblem for Cancelling<'_> {
     type State = u8;
     type Action = u8;
     type Successors = std::vec::IntoIter<(u8, u8)>;
-
 
     /// Retain node zero as origin.
     fn initial(&self) -> u8 {
         0
     }
 
-
     /// This fixture has no full goal.
     fn is_goal(&self, _: u8) -> bool {
         false
     }
-
 
     /// Revocation at node one occurs after its improving prefix was retained.
     fn successors(&self, state: u8) -> Self::Successors {
@@ -360,14 +334,12 @@ impl SearchProblem for Cancelling<'_> {
     }
 }
 
-
 impl BestEffortProblem for Cancelling<'_> {
     /// Retain the wrapped scores without cancellation side effects.
     fn score(&self, state: u8) -> u32 {
         self.graph.score(state)
     }
 }
-
 
 /// STOP never converts an already found prefix into an executable result.
 #[test]
@@ -391,7 +363,6 @@ fn cancellation_after_a_candidate_exposes_no_actions() {
         }
     ));
 }
-
 
 /// A pre-reconstructed prefix survives elapsed-budget exhaustion without late allocation.
 #[test]
@@ -444,4 +415,137 @@ fn deadline_retains_checked_prefix_but_fatal_errors_do_not() {
             matches!(finish(Candidate { actions: vec![1], score: 1, goal: false, label: PathLabel { cost: 1, depth: 1 } }, SearchStats::default(), Some(reason), &cancel), BestEffortOutcome::Stopped { reason: actual, .. } if reason == actual)
         );
     }
+}
+
+#[test]
+fn controlled_yield_best_stops_phase_one_without_entering_fallback() {
+    use std::cell::Cell;
+    // Pruned state 100 would only be explored if Phase 2 Dijkstra started; assert it is never visited!
+    struct PrunedAwareGraph<'a> {
+        yield_best: &'a AtomicBool,
+        visited_pruned: Cell<bool>,
+    }
+    impl SearchProblem for PrunedAwareGraph<'_> {
+        type State = usize;
+        type Action = usize;
+        type Successors = std::vec::IntoIter<(usize, usize)>;
+        fn initial(&self) -> Self::State {
+            0
+        }
+        fn is_goal(&self, state: Self::State) -> bool {
+            state == 999
+        }
+        fn impossible(&self, state: Self::State) -> bool {
+            state == 100
+        }
+        fn successors(&self, state: Self::State) -> Self::Successors {
+            if state == 100 {
+                self.visited_pruned.set(true);
+            }
+            match state {
+                0 => vec![(1, 1), (2, 100)].into_iter(),
+                1 => {
+                    self.yield_best.store(true, AtomicOrdering::Release);
+                    vec![(3, 2)].into_iter()
+                }
+                100 => vec![(4, 101)].into_iter(),
+                _ => Vec::new().into_iter(),
+            }
+        }
+    }
+    impl BestEffortProblem for PrunedAwareGraph<'_> {
+        fn score(&self, state: Self::State) -> u32 {
+            match state {
+                1 => 12,
+                100 => 1,
+                101 => 99,
+                _ => 0,
+            }
+        }
+    }
+
+    let cancel = AtomicBool::new(false);
+    let yield_best = AtomicBool::new(false);
+    let problem = PrunedAwareGraph {
+        yield_best: &yield_best,
+        visited_pruned: Cell::new(false),
+    };
+    let mut final_score = None;
+    let mut progress = |snap: BestEffortProgress| {
+        if snap.search.finished {
+            final_score = Some(snap.best_score);
+        }
+    };
+    let outcome = solve_best_effort_controlled(
+        &problem,
+        SearchLimits::default(),
+        SearchOptions::default(),
+        BestEffortControl {
+            cancel: &cancel,
+            yield_best: Some(&yield_best),
+            progress: Some(&mut progress),
+            checkpoint: None,
+        },
+    );
+    assert!(!problem.visited_pruned.get());
+    assert!(matches!(
+        outcome,
+        BestEffortOutcome::Partial {
+            actions,
+            score: 12,
+            proof: PartialProof::Bounded(SearchStop::Interrupted),
+            ..
+        } if actions == [1]
+    ));
+    assert_eq!(final_score, Some(12));
+}
+
+#[test]
+fn controlled_yield_best_pre_set_and_cancel_precedence() {
+    let graph = Graph {
+        edges: &[(0, 1)],
+        goal: Some(99),
+        scores: &[(1, 5)],
+        impossible_root: false,
+    };
+    let cancel = AtomicBool::new(false);
+    let yield_best = AtomicBool::new(true);
+    let pre_yield = solve_best_effort_controlled(
+        &graph,
+        SearchLimits::default(),
+        SearchOptions::default(),
+        BestEffortControl {
+            yield_best: Some(&yield_best),
+            ..BestEffortControl::new(&cancel)
+        },
+    );
+    assert!(matches!(
+        pre_yield,
+        BestEffortOutcome::Partial {
+            actions,
+            score: 0,
+            proof: PartialProof::Bounded(SearchStop::Interrupted),
+            ..
+        } if actions.is_empty()
+    ));
+
+    cancel.store(true, AtomicOrdering::Release);
+    let cancelled = solve_best_effort_controlled(
+        &graph,
+        SearchLimits::default(),
+        SearchOptions::default(),
+        BestEffortControl {
+            cancel: &cancel,
+            yield_best: Some(&yield_best),
+            progress: None,
+            checkpoint: None,
+        },
+    );
+    assert!(matches!(
+        cancelled,
+        BestEffortOutcome::Stopped {
+            reason: SearchStop::Cancelled,
+            ..
+        }
+    ));
 }

@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.17.0 — domain-neutral controlled search and live best-score yield, 2026-11-21
+
+- **Domain-neutral soft-interrupt & live best-score tracking (`src/search.rs`, `src/search/best_effort.rs`, `src/search/guided_fallback_tests.rs`, `src/search/best_effort/tests.rs`):** Added `SearchStop::Interrupted`, `BestEffortProgress`, `BestEffortControl`, `solve_controlled`, `solve_best_effort_controlled`, and `solve_guided_unlimited_best_effort_controlled` so external controllers can inspect live best partial scores, separate hard `cancel` (returning no route) from soft `yield_best` interrupts (promoting any already-generated unexpanded `is_goal` state cleanly to `Solved { minimum_proven: false }` or returning `SearchStop::Interrupted` with the verified best partial route), skip Phase 2 escalation cleanly after a Phase 1 `Interrupted`, and drop search arenas immediately before delivering final observers or returning without invoking any post-completion checkpoint. `src/games/*` and all non-search modules remain untouched at `HEAD` (pre-existing `.gitignore` working-tree edits preserved), and feature defaults, dependencies, MSRV, and edition are unchanged.
+- **Host Tier 2 & isolated feature matrix (Beast):** `rustfmt --edition 2024` check on the four modified `src/search*.rs` files (`--unstable-features --skip-children` on `src/search.rs`), `--no-default-features` (`14` passed), all `16` isolated feature check+test pairs, `--all-features` strict Clippy (`--lib --bins` and `--all-targets`), private `cargo doc` (`-D warnings`), `--all-features` tests (`381` unit/integration + `5` doc-tests passed; `1` `#[ignore]`d manual path test `exported_deal_complete_route` in `tests/freecell_search.rs`), and `--release --all-features` build all passed. Paired with application `3.5.0`; live Windows 11 guest acceptance remains pending operator relaunch.
+
 ## 0.16.3 — host-qualified metadata patch
 
 Requested paired patch release for application 3.1.20. Rust sources and public APIs are byte-preserved. Application controls use the existing bounded path/Duration transport. Feature defaults, dependencies, MSRV and edition are preserved.

@@ -23,7 +23,6 @@
 
 use crate::parameters::SEARCH_PROGRESS_INTERVAL as PROGRESS_INTERVAL;
 
-
 use std::{
     cell::Cell,
     cmp::Ordering,
@@ -35,27 +34,21 @@ use std::{
     time::{Duration, Instant},
 };
 
-
 mod best_effort;
-
 
 pub use best_effort::{
     BestEffortOutcome, BestEffortProblem, PartialProof, solve_best_effort,
-    solve_best_effort_with_control,
+    solve_best_effort_controlled, solve_best_effort_with_control,
 };
-
 
 #[cfg(test)]
 mod cost_tests;
 
-
 #[cfg(test)]
 mod control_tests;
 
-
 #[cfg(test)]
 mod guided_fallback_tests;
-
 
 /// Explicit resource limits for one synchronous search.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -70,7 +63,6 @@ pub struct SearchLimits {
     pub max_duration: std::time::Duration,
 }
 
-
 impl Default for SearchLimits {
     /// Use bounded workstation defaults; callers may supply smaller/larger limits.
     fn default() -> Self {
@@ -83,7 +75,6 @@ impl Default for SearchLimits {
     }
 }
 
-
 /// Search ordering; Dijkstra independently disables heuristic guidance/pruning.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum SearchMethod {
@@ -92,7 +83,6 @@ pub enum SearchMethod {
     /// Zero-heuristic reference minimum-cost search for manageable fixtures.
     Dijkstra,
 }
-
 
 /// Search ordering and positive heuristic weight for an optional guided search.
 ///
@@ -106,7 +96,6 @@ pub struct SearchOptions {
     pub heuristic_weight: NonZeroU32,
 }
 
-
 impl Default for SearchOptions {
     /// Preserve exact A* unless a caller explicitly requests a larger weight.
     fn default() -> Self {
@@ -116,7 +105,6 @@ impl Default for SearchOptions {
         }
     }
 }
-
 
 /// Work actually completed by one bounded search.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -133,7 +121,6 @@ pub struct SearchStats {
     pub elapsed: std::time::Duration,
 }
 
-
 /// One bounded observer notification, without a queue or domain-specific policy.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct SearchProgress {
@@ -143,6 +130,38 @@ pub struct SearchProgress {
     pub finished: bool,
 }
 
+/// Periodic best-effort observer notification including the highest score found so far.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct BestEffortProgress {
+    /// Actual cumulative work, active elapsed time and completion state.
+    pub search: SearchProgress,
+    /// Highest domain score recorded across visited records so far.
+    pub best_score: u32,
+}
+
+/// Cooperative controls, live score progress hook and pause accounting for best-effort search.
+pub struct BestEffortControl<'a> {
+    /// Hard cancellation flag; discards any partial prefix with [`SearchStop::Cancelled`].
+    pub cancel: &'a AtomicBool,
+    /// Cooperative soft-stop flag; halts further expansion and returns the best scored prefix.
+    pub yield_best: Option<&'a AtomicBool>,
+    /// Optional observer notified initially, periodically and once before exit.
+    pub progress: Option<&'a mut dyn FnMut(BestEffortProgress)>,
+    /// Optional suspension hook returning wall time excluded from elapsed limits.
+    pub checkpoint: Option<&'a dyn Fn() -> Duration>,
+}
+
+impl<'a> BestEffortControl<'a> {
+    /// Create a default control handle polling only the supplied hard-stop flag.
+    pub fn new(cancel: &'a AtomicBool) -> Self {
+        Self {
+            cancel,
+            yield_best: None,
+            progress: None,
+            checkpoint: None,
+        }
+    }
+}
 
 /// Reason search stopped without proving either a solution or impossibility.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -155,6 +174,8 @@ pub enum SearchStop {
     MemoryLimit,
     /// Cooperative active-search deadline reached.
     TimeLimit,
+    /// The caller's soft-stop flag requested returning the best available prefix.
+    Interrupted,
     /// The caller's atomic cancellation flag was set.
     Cancelled,
     /// A checked collection allocation failed.
@@ -162,7 +183,6 @@ pub enum SearchStop {
     /// A checked state/predecessor invariant or weighted-priority calculation failed.
     InternalInvariant,
 }
-
 
 impl std::fmt::Display for SearchStop {
     /// Retain stable human-readable stop messages without optional dependencies.
@@ -172,6 +192,7 @@ impl std::fmt::Display for SearchStop {
             Self::ExpansionLimit => "expansion limit",
             Self::MemoryLimit => "memory limit",
             Self::TimeLimit => "time limit",
+            Self::Interrupted => "early stop interrupt",
             Self::Cancelled => "cancelled",
             Self::AllocationFailure => "allocation failure",
             Self::InternalInvariant => "internal search invariant failure",
@@ -179,9 +200,7 @@ impl std::fmt::Display for SearchStop {
     }
 }
 
-
 impl std::error::Error for SearchStop {}
-
 
 /// Outcome preserving the distinction between proof and bounded interruption.
 #[derive(Debug, Eq, PartialEq)]
@@ -211,7 +230,6 @@ pub enum SearchOutcome<A> {
     },
 }
 
-
 /// A pure nonnegative-cost problem independent of any domain or I/O backend.
 ///
 /// Equal states must describe equivalent future transitions and goals. Successors
@@ -234,37 +252,30 @@ pub trait SearchProblem {
     /// Finite owned iterator over legal transitions in deterministic order.
     type Successors: Iterator<Item = (Self::Action, Self::State)>;
 
-
     /// Return the unchanged starting state for this invocation.
     fn initial(&self) -> Self::State;
-
 
     /// Whether the supplied state meets this problem's goal condition.
     fn is_goal(&self, state: Self::State) -> bool;
 
-
     /// Generate every legal edge without changing the problem.
     fn successors(&self, state: Self::State) -> Self::Successors;
-
 
     /// Return a stable nonnegative edge cost; zero-cost cycles are safely dominated.
     fn action_cost(&self, _state: Self::State, _action: Self::Action) -> u32 {
         1
     }
 
-
     /// Return an admissible lower bound in the declared action-cost units.
     fn heuristic(&self, _state: Self::State) -> u32 {
         0
     }
-
 
     /// Prove that no goal is reachable, or conservatively return false.
     fn impossible(&self, _state: Self::State) -> bool {
         false
     }
 }
-
 
 /// Conservative aggregate bytes allowed per immutable record before growth.
 ///
@@ -273,10 +284,8 @@ pub trait SearchProblem {
 /// a second guard and reserves room for the reconstructed action collection.
 const MEMORY_BYTES_PER_RECORD: usize = 1024;
 
-
 /// Smallest useful collection reservation, in elements rather than bytes.
 const MIN_COLLECTION_CAPACITY: usize = 4;
-
 
 /// Allowance for hash bucket rounding, control bytes and spare table capacity.
 ///
@@ -284,27 +293,49 @@ const MIN_COLLECTION_CAPACITY: usize = 4;
 /// This deliberately generous factor is an estimate, not an allocator contract.
 const HASH_MEMORY_FACTOR: usize = 4;
 
+/// Callback target supporting legacy progress snapshots and live-score best-effort snapshots.
+enum ProgressObserver<'a> {
+    /// Existing cumulative progress callback without best-score metadata.
+    Search(&'a mut dyn FnMut(SearchProgress)),
+    /// Controlled best-effort callback receiving live highest-score updates.
+    BestEffort(&'a mut dyn FnMut(BestEffortProgress)),
+}
 
 /// Borrowed synchronous observer and its most recent notification time.
 ///
 /// This state is stack-owned and allocates no queue, thread or callback storage.
 struct ProgressReporter<'a> {
     /// Optional caller-owned callback; it must return promptly and not panic.
-    observer: Option<&'a mut dyn FnMut(SearchProgress)>,
+    observer: Option<ProgressObserver<'a>>,
     /// Search elapsed time at the last emitted notification, absent initially.
     last_reported: Option<Duration>,
+    /// Monotonically highest domain score recorded during the search.
+    best_score: u32,
 }
-
 
 impl<'a> ProgressReporter<'a> {
     /// Borrow a callback without invoking it or performing an allocation.
     fn new(observer: Option<&'a mut dyn FnMut(SearchProgress)>) -> Self {
         Self {
-            observer,
+            observer: observer.map(ProgressObserver::Search),
             last_reported: None,
+            best_score: 0,
         }
     }
 
+    /// Borrow a best-effort observer receiving live best scores.
+    fn best_effort(observer: Option<&'a mut dyn FnMut(BestEffortProgress)>) -> Self {
+        Self {
+            observer: observer.map(ProgressObserver::BestEffort),
+            last_reported: None,
+            best_score: 0,
+        }
+    }
+
+    /// Record a monotonic improvement in the best discovered state score.
+    fn record_score(&mut self, score: u32) {
+        self.best_score = self.best_score.max(score);
+    }
 
     /// Emit an initial, due periodic or unconditional final snapshot, if enabled.
     ///
@@ -324,11 +355,17 @@ impl<'a> ProgressReporter<'a> {
         }
 
         self.last_reported = Some(stats.elapsed);
-        observer(SearchProgress { stats, finished });
+        let search = SearchProgress { stats, finished };
+        match observer {
+            ProgressObserver::Search(callback) => callback(search),
+            ProgressObserver::BestEffort(callback) => callback(BestEffortProgress {
+                search,
+                best_score: self.best_score,
+            }),
+        }
         true
     }
 }
-
 
 /// Discovered objective cost, with route length breaking equal-cost state ties.
 #[derive(Clone, Copy, Debug, Default, Eq, Ord, PartialEq, PartialOrd)]
@@ -338,7 +375,6 @@ struct PathLabel {
     /// Number of logical operations, including zero-cost transitions.
     depth: usize,
 }
-
 
 impl PathLabel {
     /// Extend both independent measures without wrapping either integer.
@@ -358,7 +394,6 @@ impl PathLabel {
     }
 }
 
-
 /// One immutable history record, retained even after its state is reopened.
 #[derive(Clone, Copy, Debug)]
 struct Node<S, A> {
@@ -374,7 +409,6 @@ struct Node<S, A> {
     cost: usize,
 }
 
-
 impl<S, A> Node<S, A> {
     /// Compare objective cost first without confusing it with history depth.
     fn label(&self) -> PathLabel {
@@ -384,7 +418,6 @@ impl<S, A> Node<S, A> {
         }
     }
 }
-
 
 /// Heap order: lowest f, highest cost, shortest equal-cost path, then serial.
 #[derive(Clone, Copy, Debug)]
@@ -399,7 +432,6 @@ struct FrontierEntry {
     cost: usize,
 }
 
-
 impl PartialEq for FrontierEntry {
     /// Compare exactly the fields participating in the total heap ordering.
     fn eq(&self, other: &Self) -> bool {
@@ -408,9 +440,7 @@ impl PartialEq for FrontierEntry {
     }
 }
 
-
 impl Eq for FrontierEntry {}
-
 
 impl Ord for FrontierEntry {
     /// Reverse f and insertion order because BinaryHeap pops the greatest item.
@@ -424,14 +454,12 @@ impl Ord for FrontierEntry {
     }
 }
 
-
 impl PartialOrd for FrontierEntry {
     /// Delegate partial ordering to the deterministic total ordering.
     fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
         Some(self.cmp(other))
     }
 }
-
 
 /// Owned bounded search collections and counters for one synchronous invocation.
 struct Engine<'a, S, A> {
@@ -445,6 +473,8 @@ struct Engine<'a, S, A> {
     limits: Option<SearchLimits>,
     /// Caller-owned flag, observed before work and between successors.
     cancel: &'a AtomicBool,
+    /// Optional soft-stop flag requesting cooperative best-prefix extraction.
+    yield_best: Option<&'a AtomicBool>,
     /// Wall-clock origin shared by guided and unpruned phases.
     started: Instant,
     /// Optional caller checkpoint; it may wait cooperatively without losing state.
@@ -455,7 +485,6 @@ struct Engine<'a, S, A> {
     stats: SearchStats,
 }
 
-
 impl<'a, S: Copy + Eq + Hash, A: Copy> Engine<'a, S, A> {
     /// Create empty collections without performing a heap allocation.
     fn new(limits: SearchLimits, cancel: &'a AtomicBool) -> Self {
@@ -465,6 +494,7 @@ impl<'a, S: Copy + Eq + Hash, A: Copy> Engine<'a, S, A> {
             best: HashMap::new(),
             limits: Some(limits),
             cancel,
+            yield_best: None,
             started: Instant::now(),
             checkpoint: None,
             paused: Cell::new(Duration::ZERO),
@@ -478,7 +508,6 @@ impl<'a, S: Copy + Eq + Hash, A: Copy> Engine<'a, S, A> {
         }
     }
 
-
     /// Exclude only the reported intentional pause within a measured checkpoint.
     ///
     /// Clamp over-reporting to the callback's own span; saturate cumulative arithmetic.
@@ -486,7 +515,6 @@ impl<'a, S: Copy + Eq + Hash, A: Copy> Engine<'a, S, A> {
         self.paused
             .set(self.paused.get().saturating_add(reported.min(measured)));
     }
-
 
     /// Measure active elapsed time against a supplied monotonic-clock reading.
     ///
@@ -496,13 +524,17 @@ impl<'a, S: Copy + Eq + Hash, A: Copy> Engine<'a, S, A> {
             .saturating_sub(self.paused.get())
     }
 
+    /// Whether the caller's hard cancellation flag has been raised.
+    fn cancelled(&self) -> bool {
+        self.cancel.load(AtomicOrdering::Acquire)
+    }
 
-    /// Fence a caller checkpoint with cancellation before testing the active budget.
+    /// Fence a caller checkpoint with hard cancellation, soft-yield and active budget checks.
     ///
     /// A paused checkpoint retains every collection and iterator on this thread.
-    /// The caller must wake its checkpoint when cancellation is requested.
+    /// The caller must wake its checkpoint when cancellation or early-yield is requested.
     fn poll(&self) -> Result<(), SearchStop> {
-        if self.cancel.load(AtomicOrdering::Relaxed) {
+        if self.cancelled() {
             return Err(SearchStop::Cancelled);
         }
 
@@ -511,7 +543,7 @@ impl<'a, S: Copy + Eq + Hash, A: Copy> Engine<'a, S, A> {
             let reported = checkpoint();
             let returned = Instant::now();
             self.account_pause(reported, returned.saturating_duration_since(entered));
-            if self.cancel.load(AtomicOrdering::Relaxed) {
+            if self.cancelled() {
                 return Err(SearchStop::Cancelled);
             }
 
@@ -519,6 +551,13 @@ impl<'a, S: Copy + Eq + Hash, A: Copy> Engine<'a, S, A> {
         } else {
             Instant::now()
         };
+
+        if self
+            .yield_best
+            .is_some_and(|flag| flag.load(AtomicOrdering::Acquire))
+        {
+            return Err(SearchStop::Interrupted);
+        }
 
         if self
             .limits
@@ -530,7 +569,6 @@ impl<'a, S: Copy + Eq + Hash, A: Copy> Engine<'a, S, A> {
         Ok(())
     }
 
-
     /// Poll before and after an optional due observer without weakening STOP.
     fn poll_with_progress(&self, progress: &mut ProgressReporter<'_>) -> Result<(), SearchStop> {
         self.poll()?;
@@ -540,7 +578,6 @@ impl<'a, S: Copy + Eq + Hash, A: Copy> Engine<'a, S, A> {
 
         Ok(())
     }
-
 
     /// Copy counters and measure elapsed time at the reported stopping point.
     fn stats(&self) -> SearchStats {
@@ -553,7 +590,6 @@ impl<'a, S: Copy + Eq + Hash, A: Copy> Engine<'a, S, A> {
         }
     }
 
-
     /// Report a budget, cancellation, allocation or invariant stop without proof.
     fn stopped(&self, reason: SearchStop) -> SearchOutcome<A> {
         SearchOutcome::Stopped {
@@ -561,7 +597,6 @@ impl<'a, S: Copy + Eq + Hash, A: Copy> Engine<'a, S, A> {
             stats: self.stats(),
         }
     }
-
 
     /// Reserve space for one history record, frontier entry and optional new key.
     ///
@@ -643,7 +678,6 @@ impl<'a, S: Copy + Eq + Hash, A: Copy> Engine<'a, S, A> {
         self.poll()
     }
 
-
     /// Insert a previously checked improvement without invalidating old parents.
     fn insert(
         &mut self,
@@ -668,17 +702,31 @@ impl<'a, S: Copy + Eq + Hash, A: Copy> Engine<'a, S, A> {
         Ok(())
     }
 
-
     /// Reconstruct a bounded route through immutable, strictly earlier records.
     ///
     /// Each parent must precede its child and have depth exactly one lower.
+    /// Walk predecessor indices backwards, checking bounds, depth and hard cancellation.
+    ///
     /// Missing or inconsistent records produce InternalInvariant, never a route.
-    fn route(
+    fn route_inner(
         &self,
         goal_index: usize,
         progress: &mut ProgressReporter<'_>,
+        cancel_only: bool,
     ) -> Result<Box<[A]>, SearchStop> {
-        self.poll_with_progress(progress)?;
+        let check =
+            |engine: &Self, progress: &mut ProgressReporter<'_>| -> Result<(), SearchStop> {
+                if cancel_only {
+                    if engine.cancelled() {
+                        Err(SearchStop::Cancelled)
+                    } else {
+                        Ok(())
+                    }
+                } else {
+                    engine.poll_with_progress(progress)
+                }
+            };
+        check(self, progress)?;
         let goal = self
             .nodes
             .get(goal_index)
@@ -704,7 +752,7 @@ impl<'a, S: Copy + Eq + Hash, A: Copy> Engine<'a, S, A> {
         let mut index = goal_index;
         let mut depth = goal.depth;
         loop {
-            self.poll_with_progress(progress)?;
+            check(self, progress)?;
             let node = self.nodes.get(index).ok_or(SearchStop::InternalInvariant)?;
             if node.depth != depth {
                 return Err(SearchStop::InternalInvariant);
@@ -728,8 +776,22 @@ impl<'a, S: Copy + Eq + Hash, A: Copy> Engine<'a, S, A> {
         actions.reverse();
         Ok(actions.into_boxed_slice())
     }
-}
 
+    /// Walk predecessor indices backwards under full cooperative poll checks.
+    fn route(
+        &self,
+        goal_index: usize,
+        progress: &mut ProgressReporter<'_>,
+    ) -> Result<Box<[A]>, SearchStop> {
+        self.route_inner(goal_index, progress, false)
+    }
+
+    /// Walk predecessor indices backwards after a soft interrupt, polling only hard cancellation.
+    fn route_cancel_only(&self, goal_index: usize) -> Result<Box<[A]>, SearchStop> {
+        let mut quiet = ProgressReporter::new(None);
+        self.route_inner(goal_index, &mut quiet, true)
+    }
+}
 
 /// Reject unrepresentable objective priorities, including exact weight-one keys.
 fn search_priority(cost: usize, heuristic: u32, weight: NonZeroU32) -> Result<usize, SearchStop> {
@@ -740,7 +802,6 @@ fn search_priority(cost: usize, heuristic: u32, weight: NonZeroU32) -> Result<us
         .and_then(|weighted| cost.checked_add(weighted))
         .ok_or(SearchStop::InternalInvariant)
 }
-
 
 /// Compute geometric growth bounded by the conservative retained-record cap.
 fn growth_target(length: usize, capacity: usize, maximum: usize) -> usize {
@@ -753,7 +814,6 @@ fn growth_target(length: usize, capacity: usize, maximum: usize) -> usize {
             .min(maximum)
     }
 }
-
 
 /// Estimate allocated collections plus enough actions for the longest arena path.
 ///
@@ -769,7 +829,6 @@ fn estimated_bytes<S, A>(nodes: usize, frontier: usize, states: usize) -> usize 
         )
 }
 
-
 /// Bound records by at least 1,024 bytes and by the concrete generic storage.
 ///
 /// Large caller state/action types increase the cap divisor rather than inheriting
@@ -777,7 +836,6 @@ fn estimated_bytes<S, A>(nodes: usize, frontier: usize, states: usize) -> usize 
 fn memory_bytes_per_record<S, A>() -> usize {
     estimated_bytes::<S, A>(1, 1, 1).max(MEMORY_BYTES_PER_RECORD)
 }
-
 
 /// Find a minimum declared-cost route through a pure caller-owned problem.
 ///
@@ -810,7 +868,6 @@ pub fn solve<P: SearchProblem>(
         None,
     )
 }
-
 
 /// Find a bounded declared-cost route with optional weighted A* and progress reports.
 ///
@@ -851,7 +908,6 @@ pub fn solve_with_options<P: SearchProblem>(
 ) -> SearchOutcome<P::Action> {
     solve_with_control(problem, limits, cancel, options, progress, None)
 }
-
 
 /// Run bounded search with a separate cooperative caller-owned checkpoint.
 ///
@@ -899,7 +955,6 @@ pub fn solve_with_control<P: SearchProblem>(
     outcome
 }
 
-
 /// Find a complete route using ordering guidance without configured resource caps.
 ///
 /// Orders by `g + guidance`, returns the first reached goal, and makes no minimum
@@ -946,7 +1001,6 @@ pub fn solve_guided_unlimited_with_control<P: SearchProblem>(
     outcome
 }
 
-
 /// Seek a complete route, retaining a maximum-score fallback only on exhaustion.
 ///
 /// Uses the same uncapped guided traversal as
@@ -972,53 +1026,214 @@ pub fn solve_guided_unlimited_best_effort_with_control<P: BestEffortProblem>(
     progress: Option<&mut dyn FnMut(SearchProgress)>,
     checkpoint: Option<&dyn Fn() -> Duration>,
 ) -> BestEffortOutcome<P::Action> {
-    let mut engine = Engine::<P::State, P::Action>::new(SearchLimits::default(), cancel);
-    engine.limits = None;
+    solve_single_phase_best_effort_inner(
+        problem,
+        None,
+        SearchOptions::default(),
+        cancel,
+        Some(guidance),
+        ProgressReporter::new(progress),
+        SinglePhaseControl {
+            yield_best: None,
+            checkpoint,
+        },
+    )
+}
+
+/// Seek a complete route, supporting live score updates, cooperative soft-yield and hard cancel.
+///
+/// Uses the same uncapped guided traversal as
+/// [`solve_guided_unlimited_best_effort_with_control`]. When `control.yield_best` is raised
+/// while `control.cancel` remains false, search stops promptly at the next cooperative poll,
+/// extracts any positive-score best prefix (retaining empty actions at score zero), releases the
+/// search arena immediately before final notification and returns
+/// [`BestEffortOutcome::Partial`] with [`PartialProof::Bounded`] of [`SearchStop::Interrupted`].
+/// Hard cancellation (`control.cancel`) always takes precedence and returns [`SearchStop::Cancelled`]
+/// with no actions.
+///
+/// # Errors
+/// Cancellation, allocation, arithmetic, invariant or reconstruction failure returns
+/// [`BestEffortOutcome::Stopped`] without actions.
+///
+/// # Panics
+/// Caller problem, score, guidance, observer and checkpoint panics propagate.
+pub fn solve_guided_unlimited_best_effort_controlled<P: BestEffortProblem>(
+    problem: &P,
+    guidance: &dyn Fn(P::State) -> u32,
+    control: BestEffortControl<'_>,
+) -> BestEffortOutcome<P::Action> {
+    solve_single_phase_best_effort_inner(
+        problem,
+        None,
+        SearchOptions::default(),
+        control.cancel,
+        Some(guidance),
+        ProgressReporter::best_effort(control.progress),
+        SinglePhaseControl {
+            yield_best: control.yield_best,
+            checkpoint: control.checkpoint,
+        },
+    )
+}
+
+/// Seek a goal within single-phase options and resource bounds, supporting soft-yield and live score.
+///
+/// Unlike [`solve_best_effort_controlled`], this runs only the single configured traversal
+/// (`SearchMethod::AStar` or `SearchMethod::Dijkstra`) under `limits`. Exhaustive depletion
+/// produces [`BestEffortOutcome::Partial`] with [`PartialProof::Exhaustive`], ordinary resource
+/// bounds produce [`BestEffortOutcome::Stopped`], and setting `control.yield_best` interrupts
+/// promptly to return the highest-scoring prefix via [`PartialProof::Bounded`] of
+/// [`SearchStop::Interrupted`].
+///
+/// # Panics
+/// Caller problem, score, observer and checkpoint panics propagate.
+pub fn solve_controlled<P: BestEffortProblem>(
+    problem: &P,
+    limits: SearchLimits,
+    options: SearchOptions,
+    control: BestEffortControl<'_>,
+) -> BestEffortOutcome<P::Action> {
+    solve_single_phase_best_effort_inner(
+        problem,
+        Some(limits),
+        options,
+        control.cancel,
+        None,
+        ProgressReporter::best_effort(control.progress),
+        SinglePhaseControl {
+            yield_best: control.yield_best,
+            checkpoint: control.checkpoint,
+        },
+    )
+}
+
+/// Cooperative soft-yield and suspension hooks shared across single-phase runners.
+struct SinglePhaseControl<'a> {
+    /// Soft-stop latch returning the best prefix instead of cancelling.
+    yield_best: Option<&'a AtomicBool>,
+    /// Optional cooperative pause callback excluding suspension wall time.
+    checkpoint: Option<&'a dyn Fn() -> Duration>,
+}
+
+/// Shared single-phase best-effort runner supporting optional bounds, guidance and soft-yield.
+fn solve_single_phase_best_effort_inner<P: BestEffortProblem>(
+    problem: &P,
+    limits: Option<SearchLimits>,
+    options: SearchOptions,
+    cancel: &AtomicBool,
+    guidance: Option<&dyn Fn(P::State) -> u32>,
+    mut reporter: ProgressReporter<'_>,
+    control: SinglePhaseControl<'_>,
+) -> BestEffortOutcome<P::Action> {
+    let yield_best = control.yield_best;
+    let checkpoint = control.checkpoint;
+    let mut engine = Engine::<P::State, P::Action>::new(limits.unwrap_or_default(), cancel);
+    engine.limits = limits;
+    engine.yield_best = yield_best;
     engine.checkpoint = checkpoint;
-    let mut reporter = ProgressReporter::new(progress);
     reporter.report(engine.stats(), false);
     let score = |state| problem.score(state);
     let mut tracker = ScoreTracker {
         score: &score,
         best: None,
     };
+    let minimum_proven = limits.is_some()
+        && (options.method == SearchMethod::Dijkstra
+            || options.heuristic_weight == NonZeroU32::MIN);
     let result = run_tracked(
         problem,
         &mut engine,
-        SearchOptions::default(),
+        options,
         &mut reporter,
-        Some(guidance),
+        guidance,
         Some(&mut tracker),
     );
     let outcome = match result {
         SearchOutcome::Solved { actions, stats } => BestEffortOutcome::Solved {
             actions: actions.into_vec(),
-            minimum_proven: false,
+            minimum_proven,
             stats,
         },
-        SearchOutcome::Unsolvable { .. } => {
-            let prefix = tracker
-                .best
-                .ok_or(SearchStop::InternalInvariant)
-                .and_then(|best| {
-                    engine
-                        .route(best.index, &mut reporter)
-                        .map(|actions| (best.score, actions))
+        SearchOutcome::Unsolvable { stats } => {
+            if let Some(best) = tracker.best {
+                let prefix = engine.route(best.index, &mut reporter).and_then(|actions| {
+                    engine.poll_with_progress(&mut reporter)?;
+                    Ok((best.score, actions))
                 });
-            match prefix.and_then(|prefix| {
-                engine.poll_with_progress(&mut reporter)?;
-                Ok(prefix)
-            }) {
-                Ok((score, actions)) => BestEffortOutcome::Partial {
-                    actions: actions.into_vec(),
-                    score,
+                match prefix {
+                    Ok((score, actions)) => BestEffortOutcome::Partial {
+                        actions: actions.into_vec(),
+                        score,
+                        proof: PartialProof::Exhaustive,
+                        stats: engine.stats(),
+                    },
+                    Err(reason) => BestEffortOutcome::Stopped {
+                        reason,
+                        stats: engine.stats(),
+                    },
+                }
+            } else if limits.is_some() {
+                // Bounded A* can prune at root via `impossible(initial)` before root insertion.
+                BestEffortOutcome::Partial {
+                    actions: Vec::new(),
+                    score: 0,
                     proof: PartialProof::Exhaustive,
+                    stats,
+                }
+            } else {
+                BestEffortOutcome::Stopped {
+                    reason: SearchStop::InternalInvariant,
                     stats: engine.stats(),
-                },
-                Err(reason) => BestEffortOutcome::Stopped {
-                    reason,
-                    stats: engine.stats(),
-                },
+                }
+            }
+        }
+        SearchOutcome::Stopped {
+            reason: SearchStop::Interrupted,
+            stats,
+        } => {
+            if engine.cancelled() {
+                BestEffortOutcome::Stopped {
+                    reason: SearchStop::Cancelled,
+                    stats,
+                }
+            } else {
+                match tracker.best {
+                    Some(best) if best.goal => match engine.route_cancel_only(best.index) {
+                        Ok(actions) => {
+                            reporter.record_score(best.score);
+                            BestEffortOutcome::Solved {
+                                actions: actions.into_vec(),
+                                minimum_proven: false,
+                                stats: engine.stats(),
+                            }
+                        }
+                        Err(reason) => BestEffortOutcome::Stopped {
+                            reason,
+                            stats: engine.stats(),
+                        },
+                    },
+                    Some(best) if best.score > 0 => match engine.route_cancel_only(best.index) {
+                        Ok(actions) => {
+                            reporter.record_score(best.score);
+                            BestEffortOutcome::Partial {
+                                actions: actions.into_vec(),
+                                score: best.score,
+                                proof: PartialProof::Bounded(SearchStop::Interrupted),
+                                stats: engine.stats(),
+                            }
+                        }
+                        Err(reason) => BestEffortOutcome::Stopped {
+                            reason,
+                            stats: engine.stats(),
+                        },
+                    },
+                    _ => BestEffortOutcome::Partial {
+                        actions: Vec::new(),
+                        score: 0,
+                        proof: PartialProof::Bounded(SearchStop::Interrupted),
+                        stats: engine.stats(),
+                    },
+                }
             }
         }
         SearchOutcome::Stopped { reason, stats } => BestEffortOutcome::Stopped { reason, stats },
@@ -1028,32 +1243,34 @@ pub fn solve_guided_unlimited_best_effort_with_control<P: BestEffortProblem>(
         | BestEffortOutcome::Partial { stats, .. }
         | BestEffortOutcome::Stopped { stats, .. } => *stats,
     };
-    reporter.report(stats, true);
-    if matches!(
+    let check_poll_after = matches!(
         &outcome,
         BestEffortOutcome::Solved { .. } | BestEffortOutcome::Partial { .. }
-    ) && let Err(reason) = engine.poll()
-    {
+    );
+    // Explicitly free retained arena storage before final callback or returning to caller.
+    drop(engine);
+    reporter.report(stats, true);
+    if check_poll_after && cancel.load(AtomicOrdering::Acquire) {
         return BestEffortOutcome::Stopped {
-            reason,
-            stats: engine.stats(),
+            reason: SearchStop::Cancelled,
+            stats,
         };
     }
     outcome
 }
 
-
-/// One scored immutable history record, ordered by score and then route label.
+/// One scored immutable history record, ordered by goal attainment, score, and route label.
 #[derive(Clone, Copy)]
 struct ScoredNode {
     /// Exact physical arena record, including its original parent chain.
     index: usize,
     /// Deterministic caller score of this record's state.
     score: u32,
-    /// Cost and depth used only to break equal-score ties.
+    /// Whether this state already satisfies [`SearchProblem::is_goal`].
+    goal: bool,
+    /// Cost and depth used only to break ties.
     label: PathLabel,
 }
-
 
 /// Constant-size fallback bookkeeping; the arena remains the history owner.
 struct ScoreTracker<'a, S> {
@@ -1063,24 +1280,28 @@ struct ScoreTracker<'a, S> {
     best: Option<ScoredNode>,
 }
 
-
 impl<S: Copy> ScoreTracker<'_, S> {
-    /// Retain larger scores, then lower cost and depth, without copying routes.
-    fn consider(&mut self, index: usize, state: S, label: PathLabel) {
+    /// Retain goal states first, then larger scores, then lower cost and depth.
+    fn consider(&mut self, index: usize, state: S, label: PathLabel, goal: bool) {
         let score = (self.score)(state);
-        if self
-            .best
-            .is_none_or(|best| score > best.score || (score == best.score && label < best.label))
-        {
+        let improves = if goal {
+            self.best
+                .is_none_or(|best| !best.goal || label < best.label)
+        } else {
+            self.best.is_none_or(|best| {
+                !best.goal && (score > best.score || (score == best.score && label < best.label))
+            })
+        };
+        if improves {
             self.best = Some(ScoredNode {
                 index,
                 score,
+                goal,
                 label,
             });
         }
     }
 }
-
 
 /// Preserve the existing complete-only traversal and its callback behaviour.
 fn run<P: SearchProblem>(
@@ -1092,7 +1313,6 @@ fn run<P: SearchProblem>(
 ) -> SearchOutcome<P::Action> {
     run_tracked(problem, engine, options, progress, guidance, None)
 }
-
 
 /// Run one traversal, optionally retaining scored record indices for exhaustion.
 fn run_tracked<P: SearchProblem>(
@@ -1124,6 +1344,9 @@ fn run_tracked<P: SearchProblem>(
     }
 
     if initial_is_goal {
+        if let Some(tracker) = tracker.as_mut() {
+            progress.record_score((tracker.score)(initial));
+        }
         return SearchOutcome::Solved {
             actions: Box::new([]),
             stats: engine.stats(),
@@ -1162,7 +1385,10 @@ fn run_tracked<P: SearchProblem>(
         return engine.stopped(reason);
     }
     if let Some(tracker) = tracker.as_mut() {
-        tracker.consider(0, initial, PathLabel::default());
+        tracker.consider(0, initial, PathLabel::default(), initial_is_goal);
+        if let Some(best) = tracker.best {
+            progress.record_score(best.score);
+        }
     }
 
     loop {
@@ -1188,6 +1414,9 @@ fn run_tracked<P: SearchProblem>(
         }
 
         if is_goal {
+            if let Some(tracker) = tracker.as_mut() {
+                progress.record_score((tracker.score)(node.state));
+            }
             return match engine.route(entry.node, progress) {
                 Ok(actions) => SearchOutcome::Solved {
                     actions,
@@ -1263,19 +1492,20 @@ fn run_tracked<P: SearchProblem>(
                 return engine.stopped(reason);
             }
             if let Some(tracker) = tracker.as_mut() {
-                tracker.consider(next_index, next, label);
+                tracker.consider(next_index, next, label, problem.is_goal(next));
+                if let Some(best) = tracker.best {
+                    progress.record_score(best.score);
+                }
             }
         }
     }
 }
-
 
 #[cfg(test)]
 mod options_tests {
     //! Deterministic clock-gate and arithmetic checks without waiting on a timer.
 
     use super::*;
-
 
     /// Periodic reports respect 200 ms while a matching final report bypasses it.
     #[test]
@@ -1315,7 +1545,6 @@ mod options_tests {
         );
     }
 
-
     /// A due periodic observer can cancel before another unit of engine work.
     #[test]
     fn cancellation_is_polled_immediately_after_a_periodic_observer() {
@@ -1338,7 +1567,6 @@ mod options_tests {
         assert!(engine.frontier.is_empty());
         assert!(engine.best.is_empty());
     }
-
 
     /// Weighted keys either preserve their exact integer value or stop explicitly.
     #[test]
